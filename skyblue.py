@@ -66,6 +66,65 @@ OPENAQ_BASE: str = "https://api.openaq.org/v3"
 HEADERS: dict = {"X-API-Key": OPENAQ_KEY} if OPENAQ_KEY else {}
 # Limitar cantidad de estaciones consultadas para evitar 429 (rate limit)
 DEFAULT_MAX_STATIONS_TO_QUERY: int = 10
+
+# Twilio WhatsApp (puedes sobreescribir con variables de entorno)
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "ACf307b067a65d0c6791bbfe0e27f2242c")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "c2776621773688d627a956519d6aeda2")
+TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")  # Sandbox WhatsApp
+# Content API (opcional, recomendado para plantillas)
+TWILIO_CONTENT_SID = os.getenv("TWILIO_CONTENT_SID", "HXb5b62575e6e4ff6129ad7c8efe1f983e")
+# Variables de contenido por defecto (puedes personalizarlas)
+TWILIO_CONTENT_VARIABLES = os.getenv("TWILIO_CONTENT_VARIABLES", '{"1":"12/1","2":"3pm"}')
+# Lista de destinatarios de WhatsApp (quemados). Reemplaza con tus números.
+TWILIO_WHATSAPP_RECIPIENTS: List[str] = [
+    "whatsapp:+593995532793",
+]
+
+def send_whatsapp_message(body: str, to_number: str, from_number: str, *, content_sid: Optional[str] = None, content_variables_json: Optional[str] = None) -> bool:
+    """Envía un WhatsApp usando la API de Twilio (sandbox compatible). Retorna True si fue exitoso."""
+    try:
+        if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
+            return False
+        # Normalizar prefijos whatsapp:
+        def normalize(num: str) -> str:
+            num = (num or '').strip()
+            if num.startswith("whatsapp:"):
+                return num
+            return f"whatsapp:{num}"
+        to_w = normalize(to_number)
+        from_w = normalize(from_number)
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+        # Si se proporciona ContentSid (plantilla), usar Content API
+        data = {"To": to_w, "From": from_w}
+        if content_sid:
+            data["ContentSid"] = content_sid
+            if content_variables_json:
+                data["ContentVariables"] = content_variables_json
+        else:
+            data["Body"] = body
+        resp = requests.post(url, data=data, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), timeout=20)
+        # 201 Created en éxito
+        return resp.status_code in (200, 201)
+    except Exception:
+        return False
+
+def send_bulk_whatsapp(body: str, *, use_content_template: bool = True) -> int:
+    """Envía el mismo mensaje a todos los números en TWILIO_WHATSAPP_RECIPIENTS. Retorna cuántos se enviaron con éxito."""
+    success_count = 0
+    for to_number in TWILIO_WHATSAPP_RECIPIENTS:
+        if use_content_template:
+            ok = send_whatsapp_message(
+                body,
+                to_number,
+                TWILIO_WHATSAPP_FROM,
+                content_sid=TWILIO_CONTENT_SID,
+                content_variables_json=TWILIO_CONTENT_VARIABLES,
+            )
+        else:
+            ok = send_whatsapp_message(body, to_number, TWILIO_WHATSAPP_FROM)
+        if ok:
+            success_count += 1
+    return success_count
 def iso_label(dt_iso: Optional[str]) -> Optional[str]:
     if not dt_iso: return None
     try:
@@ -214,8 +273,19 @@ with st.sidebar:
         st.session_state.radius_input = radius_input
         # El límite de estaciones a revisar está fijado en DEFAULT_MAX_STATIONS_TO_QUERY
         with st.expander("Simulación de Alertas (Demo)"):
-            if st.button("🔴 Activar Alerta Ozono", use_container_width=True): st.session_state.alert_ozone = True
-            if st.button("✅ Desactivar Alerta", use_container_width=True): st.session_state.alert_ozone = False
+            st.caption("Enviar aviso por WhatsApp a destinatarios preconfigurados (Twilio)")
+            if st.button("🔴 Activar Alerta Ozono", use_container_width=True):
+                st.session_state.alert_ozone = True
+                msg = "🔴 Rojo (TEMPO Ozono) — Ozono elevado: Evitar actividades al aire libre"
+                sent = send_bulk_whatsapp(msg, use_content_template=False)
+                if sent > 0: st.success(f"WhatsApp enviado a {sent} destinatario(s)")
+                else: st.warning("No se envió ningún WhatsApp. Revisa la configuración de Twilio o la lista de destinatarios.")
+            if st.button("✅ Desactivar Alerta", use_container_width=True):
+                st.session_state.alert_ozone = False
+                msg = "✅ Alerta de Ozono desactivada"
+                sent = send_bulk_whatsapp(msg, use_content_template=False)
+                if sent > 0: st.success(f"WhatsApp enviado a {sent} destinatario(s)")
+                else: st.warning("No se envió ningún WhatsApp. Revisa la configuración de Twilio o la lista de destinatarios.")
     else:
         st.info("Esta es una herramienta para monitorear la calidad del aire en entornos escolares.")
         st.success("Selecciona 'Inicio' en la barra superior para realizar una nueva búsqueda.")
