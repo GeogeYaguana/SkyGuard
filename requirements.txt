@@ -33,6 +33,7 @@ smmap==5.0.2
 streamlit==1.50.0
 streamlit-folium==0.25.3
 streamlit-geolocation==0.0.10
+streamlit-option-menu==0.4.0
 tenacity==9.1.2
 toml==0.10.2
 tornado==6.5.2
