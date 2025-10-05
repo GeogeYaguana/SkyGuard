@@ -7,7 +7,7 @@ import streamlit as st
 from streamlit_geolocation import streamlit_geolocation
 
 # Import WAQI as fallback
-from data_sources.waqi import get_waqi_by_coordinates
+from data_sources.waqi import get_waqi_by_coordinates, get_waqi_stations_nearby
 
 # -----------------------------
 # Configuración
@@ -419,23 +419,52 @@ else:
     # --------------------------
     candidate_locations = find_locations_by_coordinates(lat, lon, radius_km=radius_input)
 
-    for loc in candidate_locations:
-        coords = loc["coordinates"]["latitude"], loc["coordinates"]["longitude"]
-        station_name = loc.get("name", "Estación sin nombre")
+    if not candidate_locations:
+        st.info(f"No hay estaciones OpenAQ dentro de {radius_input} km.")
+    else:
+        for loc in candidate_locations:
+            coords = loc["coordinates"].get("latitude"), loc["coordinates"].get("longitude")
+            if None in coords:
+                continue
+            station_name = loc.get("name", "Estación sin nombre")
+            
+            pm25_value = get_pm25_for_station(loc)
+            if pm25_value is None:
+                continue  # saltar si no hay datos
 
-        pm25_value = get_pm25_for_station(loc)
-        if pm25_value is None:
-            continue  # saltar si no hay datos
+            color, opacity = get_color_and_opacity(pm25_value)
 
-        color, opacity = get_color_and_opacity(pm25_value)
+            # Marcador con icono nube
+            folium.Marker(
+                coords,
+                popup=f"{station_name}<br>PM2.5: {pm25_value:.1f} µg/m³",
+                tooltip=f"{station_name} - {pm25_value:.1f} µg/m³",
+                icon=folium.Icon(color=color, icon="cloud")
+            ).add_to(m)
 
-        # Marcador con icono nube
-        folium.Marker(
-            coords,
-            popup=f"{station_name}<br>PM2.5: {pm25_value:.1f} µg/m³",
-            tooltip=f"{station_name} - {pm25_value:.1f} µg/m³",
-            icon=folium.Icon(color=color, icon="cloud")
-        ).add_to(m)
+    # --------------------------
+    # 2b. Estaciones WAQI (fallback) limitadas por radio
+    # --------------------------
+    try:
+        waqi_stations = get_waqi_stations_nearby(lat, lon, radius=radius_input)
+    except Exception:
+        waqi_stations = []
+
+    if not waqi_stations:
+        st.info(f"No hay estaciones WAQI dentro de {radius_input} km.")
+    else:
+        for stn in waqi_stations:
+            stn_lat = stn.get("latitude")
+            stn_lon = stn.get("longitude")
+            if stn_lat is None or stn_lon is None:
+                continue
+            station_name = stn.get("name", "WAQI Station")
+            folium.Marker(
+                [stn_lat, stn_lon],
+                popup=f"WAQI: {station_name}",
+                tooltip=f"WAQI • {station_name}",
+                icon=folium.Icon(color="purple", icon="cloud")
+            ).add_to(m)
 
     # Círculo de influencia alrededor de la estación
     folium.Circle(
