@@ -251,6 +251,34 @@ def get_pm25(latitude: float, longitude: float, radius_km: int) -> Tuple[Optiona
         st.info("🔄 Intentando con WAQI como respaldo...")
         return get_pm25_from_waqi(latitude, longitude)
 
+# --------------------------
+# Helpers para pintar cada estación según su PM2.5
+# --------------------------
+def get_color_and_opacity(pm25: float) -> Tuple[str, float]:
+    """Devuelve color + intensidad tipo semáforo según el valor de PM2.5."""
+    if pm25 <= 35:
+        color = "green"
+        opacity = 0.15 + (pm25 / 35) * (0.6 - 0.15)
+    elif pm25 <= 55:
+        color = "orange"
+        opacity = 0.15 + ((pm25 - 35) / (55 - 35)) * (0.6 - 0.15)
+    else:
+        color = "red"
+        max_val = min(pm25, 150)  # limitamos para no explotar
+        opacity = 0.15 + ((max_val - 55) / (150 - 55)) * (0.6 - 0.15)
+    return color, opacity
+
+def get_pm25_for_station(location: Dict) -> Optional[float]:
+    """Obtiene el último valor de PM2.5 para una estación específica."""
+    sensor_id = get_pm25_sensor_id_from_location(location)
+    if not sensor_id:
+        return None
+    v, _ = get_latest_measurement_from_sensor(sensor_id)
+    return v
+
+
+
+
 # -----------------------------
 # UI de la Barra Lateral
 # -----------------------------
@@ -386,21 +414,40 @@ else:
     ).add_to(m)
 
     # --------------------------
-    # 2. Estaciones OpenAQ
+    # --------------------------
+    # 2. Estaciones OpenAQ (cada una con su valor real de PM2.5)
     # --------------------------
     candidate_locations = find_locations_by_coordinates(lat, lon, radius_km=radius_input)
 
     for loc in candidate_locations:
         coords = loc["coordinates"]["latitude"], loc["coordinates"]["longitude"]
         station_name = loc.get("name", "Estación sin nombre")
-        # Color basado en tu medición seleccionada
-        color = get_color_for_value(pm25_display)
+
+        pm25_value = get_pm25_for_station(loc)
+        if pm25_value is None:
+            continue  # saltar si no hay datos
+
+        color, opacity = get_color_and_opacity(pm25_value)
+
+        # Marcador con icono nube
         folium.Marker(
             coords,
-            popup=f"{station_name}",
-            tooltip=station_name,
+            popup=f"{station_name}<br>PM2.5: {pm25_value:.1f} µg/m³",
+            tooltip=f"{station_name} - {pm25_value:.1f} µg/m³",
             icon=folium.Icon(color=color, icon="cloud")
         ).add_to(m)
+
+    # Círculo de influencia alrededor de la estación
+    folium.Circle(
+        location=coords,
+        radius=500,  # 500m de influencia visual
+        color=color,
+        fill=True,
+        fill_color=color,
+        fill_opacity=opacity,
+        tooltip=f"{station_name} (PM2.5: {pm25_value:.1f})"
+    ).add_to(m)
+
 
     # --------------------------
     # 3. Bounding Box NASA TEMPO
@@ -438,7 +485,43 @@ else:
             weight=4,
             tooltip=tooltip_text
         ).add_to(m)
+        
+        def get_color_and_opacity(pm25: float) -> Tuple[str, float]:
+            """Devuelve el color (semáforo) y la intensidad (opacity) según el PM2.5."""
+            if pm25 <= 35:
+                color = "green"
+                # Escalar intensidad dentro del rango 0-35
+                opacity = 0.15 + (pm25 / 35) * (0.6 - 0.15)
+            elif pm25 <= 55:
+                color = "orange"
+                # Escalar dentro de 35-55
+                opacity = 0.15 + ((pm25 - 35) / (55 - 35)) * (0.6 - 0.15)
+            else:
+                color = "red"
+                # Para >55, subimos opacidad hasta 0.6
+                max_val = min(pm25, 150)  # limitamos para no pasar
+                opacity = 0.15 + ((max_val - 55) / (150 - 55)) * (0.6 - 0.15)
+            return color, opacity
+        # --------------------------
+        # 5. Circunferencia del radio de búsqueda con intensidad dinámica
+        # --------------------------
+        circle_color, opacity = get_color_and_opacity(pm25_display)
 
+        folium.Circle(
+            location=[lat, lon],
+            radius=radius_input * 1000,  # km → metros
+            color=circle_color,
+            weight=2,
+            fill=True,
+            fill_color=circle_color,
+            fill_opacity=opacity,
+            tooltip=f"Radio de búsqueda: {radius_input} km (PM2.5: {pm25_display:.1f})"
+        ).add_to(m)
+
+    
+    
+    
+            
     # --------------------------
     # Mostrar mapa en Streamlit
     # --------------------------
