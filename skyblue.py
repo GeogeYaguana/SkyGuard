@@ -67,19 +67,44 @@ HEADERS: dict = {"X-API-Key": OPENAQ_KEY} if OPENAQ_KEY else {}
 # Limitar cantidad de estaciones consultadas para evitar 429 (rate limit)
 DEFAULT_MAX_STATIONS_TO_QUERY: int = 10
 
-# Twilio WhatsApp (puedes sobreescribir con variables de entorno)
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "ACf307b067a65d0c6791bbfe0e27f2242c")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "c2776621773688d627a956519d6aeda2")
-TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")  # Sandbox WhatsApp
-# Content API (opcional, recomendado para plantillas)
-TWILIO_CONTENT_SID = os.getenv("TWILIO_CONTENT_SID", "HXb5b62575e6e4ff6129ad7c8efe1f983e")
-# Variables de contenido por defecto (puedes personalizarlas)
-TWILIO_CONTENT_VARIABLES = os.getenv("TWILIO_CONTENT_VARIABLES", '{"1":"12/1","2":"3pm"}')
+# Carga segura de secretos: primero st.secrets (si existe), luego variables de entorno
+def _get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
+    try:
+        if hasattr(st, "secrets") and name in st.secrets:
+            return str(st.secrets.get(name))
+    except Exception:
+        pass
+    return os.getenv(name, default)
+
+# Twilio WhatsApp (por defecto usa credenciales de prueba locales; en prod sobreescribe con secrets/env)
+TWILIO_ACCOUNT_SID = _get_secret("TWILIO_ACCOUNT_SID", "ACf307b067a65d0c6791bbfe0e27f2242c")
+TWILIO_AUTH_TOKEN = _get_secret("TWILIO_AUTH_TOKEN", "49310e467520a35272f8378ead242dce")
+TWILIO_WHATSAPP_FROM = _get_secret("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")  # sandbox
+# Content API (opcional)
+TWILIO_CONTENT_SID = _get_secret("TWILIO_CONTENT_SID", "HXb5b62575e6e4ff6129ad7c8efe1f983e")
+# Variables de contenido (JSON string)
+TWILIO_CONTENT_VARIABLES = _get_secret("TWILIO_CONTENT_VARIABLES", '{"1":"12/1","2":"3pm"}')
 # Lista de destinatarios de WhatsApp (quemados). Reemplaza con tus números.
 TWILIO_WHATSAPP_RECIPIENTS: List[str] = [
     "whatsapp:+593995532793",
     "whatsapp:+593939972193",
 ]
+
+def _twilio_config_check() -> Optional[str]:
+    """Return an error message if Twilio config looks invalid; otherwise None."""
+    sid = (TWILIO_ACCOUNT_SID or "").strip()
+    token = (TWILIO_AUTH_TOKEN or "").strip()
+    sender = (TWILIO_WHATSAPP_FROM or "").strip()
+    # Detectar placeholders conocidos para advertir
+    if not sid or not token:
+        return "Faltan credenciales de Twilio. Define TWILIO_ACCOUNT_SID y TWILIO_AUTH_TOKEN."
+    if not sid.startswith("AC") or len(sid) < 30:
+        return "TWILIO_ACCOUNT_SID inválido. Debe empezar con 'AC' y ser el SID de cuenta."
+    if len(token) < 20:
+        return "TWILIO_AUTH_TOKEN parece inválido. Verifica el token de tu cuenta."
+    if not sender.startswith("whatsapp:+"):
+        return "TWILIO_WHATSAPP_FROM inválido. Usa el formato 'whatsapp:+<código><número>'."
+    return None
 
 def send_whatsapp_message(body: str, to_number: str, from_number: str, *, content_sid: Optional[str] = None, content_variables_json: Optional[str] = None) -> bool:
     """Envía un WhatsApp usando la API de Twilio (sandbox compatible). Retorna True si fue exitoso."""
@@ -105,7 +130,18 @@ def send_whatsapp_message(body: str, to_number: str, from_number: str, *, conten
             data["Body"] = body
         resp = requests.post(url, data=data, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), timeout=20)
         # 201 Created en éxito
-        return resp.status_code in (200, 201)
+        if resp.status_code in (200, 201):
+            return True
+        # Mostrar diagnóstico útil en la UI
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = {"raw": resp.text[:400] if isinstance(resp.text, str) else str(resp.text)}
+        st.error(
+            f"Twilio WhatsApp falló (HTTP {resp.status_code}). Detalles: "
+            f"{payload.get('message') or payload.get('error_message') or payload}"
+        )
+        return False
     except Exception:
         return False
 
