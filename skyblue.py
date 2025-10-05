@@ -11,6 +11,7 @@ from streamlit_option_menu import option_menu # <-- Importación nueva
 
 # Import WAQI as fallback
 # Asegúrate de que este archivo exista en tu proyecto: from data_sources.waqi import get_waqi_by_coordinates
+from data_sources.waqi import get_waqi_stations_nearby
 
 # -----------------------------
 # Configuración
@@ -48,6 +49,14 @@ if "search_triggered" not in st.session_state:
     st.session_state.search_triggered = False
 if "coords_to_process" not in st.session_state:
     st.session_state.coords_to_process = None
+if "openaq_rate_limited" not in st.session_state:
+    st.session_state.openaq_rate_limited = False
+if "last_query" not in st.session_state:
+    st.session_state.last_query = None
+if "last_result" not in st.session_state:
+    st.session_state.last_result = {"pm25": None, "dt_iso": None, "source": "Sin datos"}
+if "last_search_log" not in st.session_state:
+    st.session_state.last_search_log = []
 
 # (Aquí van todas tus funciones helper: iso_label, pm25_to_level, find_locations_by_coordinates, etc.
 #  Las omito aquí por brevedad, pero deben estar en tu script)
@@ -55,6 +64,8 @@ if "coords_to_process" not in st.session_state:
 OPENAQ_KEY: str = "08f176ffd0ccb07a617b9d9cf0f740366b783adfcef064fcc601a7a636463473"
 OPENAQ_BASE: str = "https://api.openaq.org/v3"
 HEADERS: dict = {"X-API-Key": OPENAQ_KEY} if OPENAQ_KEY else {}
+# Limitar cantidad de estaciones consultadas para evitar 429 (rate limit)
+DEFAULT_MAX_STATIONS_TO_QUERY: int = 10
 def iso_label(dt_iso: Optional[str]) -> Optional[str]:
     if not dt_iso: return None
     try:
@@ -74,17 +85,23 @@ def _request_openaq(endpoint: str, params: Optional[dict] = None) -> dict:
     return r.json()
 @st.cache_data(ttl=600)
 def find_locations_by_coordinates(latitude: float, longitude: float, radius_km: int) -> List[Dict]:
-    st.info(f"Buscando estaciones en un radio de {radius_km} km...")
+    msg = f"Buscando estaciones en un radio de {radius_km} km..."
+    st.session_state.last_search_log.append({"level": "info", "text": msg})
+    st.info(msg)
     params = {"coordinates": f"{latitude},{longitude}", "radius": radius_km * 1000, "limit": 100}
     try:
         data = _request_openaq("locations", params=params)
         locations = data.get("results", [])
         pm25_locations = [loc for loc in locations if any(s.get("parameter", {}).get("name") == "pm25" for s in loc.get("sensors", []))]
         sorted_locations = sorted(pm25_locations, key=lambda loc: loc.get('distance', float('inf')))
-        st.success(f"Se encontraron {len(sorted_locations)} estaciones con sensor PM2.5 cerca.")
+        msg_ok = f"Se encontraron {len(sorted_locations)} estaciones con sensor PM2.5 cerca."
+        st.session_state.last_search_log.append({"level": "success", "text": msg_ok})
+        st.success(msg_ok)
         return sorted_locations
     except Exception as e:
-        st.error(f"Error al buscar estaciones cercanas: {e}")
+        err = f"Error al buscar estaciones cercanas: {e}"
+        st.session_state.last_search_log.append({"level": "error", "text": err})
+        st.error(err)
         return []
 def get_pm25_sensor_id_from_location(location_data: Dict) -> Optional[int]:
     sensors = location_data.get("sensors", [])
@@ -95,7 +112,15 @@ def get_pm25_sensor_id_from_location(location_data: Dict) -> Optional[int]:
 def get_latest_measurement_from_sensor(sensor_id: int) -> Tuple[Optional[float], Optional[str]]:
     now_utc, twenty_four_hours_ago = datetime.now(timezone.utc), datetime.now(timezone.utc) - timedelta(hours=24)
     params = {"limit": 100, "page": 1, "datetime_from": twenty_four_hours_ago.isoformat(), "datetime_to": now_utc.isoformat(), "order_by": "datetime", "sort": "desc"}
-    data = _request_openaq(f"sensors/{sensor_id}/measurements", params=params)
+    try:
+        data = _request_openaq(f"sensors/{sensor_id}/measurements", params=params)
+    except requests.exceptions.HTTPError as http_err:
+        # Manejo especial para 429
+        if getattr(http_err, 'response', None) is not None and http_err.response is not None and http_err.response.status_code == 429:
+            # Marcar en sesión para mostrar un único aviso más adelante
+            st.session_state.openaq_rate_limited = True
+            return None, None
+        raise
     results = data.get("results", [])
     if results:
         valid_results = [r for r in results if r.get("period", {}).get("datetimeTo", {}).get("utc")]
@@ -107,24 +132,43 @@ def get_latest_measurement_from_sensor(sensor_id: int) -> Tuple[Optional[float],
     return None, None
 def get_pm25(latitude: float, longitude: float, radius_km: int) -> Tuple[Optional[float], Optional[str], str]:
     try:
+        # resetear el historial para esta búsqueda
+        st.session_state.last_search_log = []
         candidate_locations = find_locations_by_coordinates(latitude, longitude, radius_km=radius_km)
         if not candidate_locations:
-            st.warning("No se encontró ninguna estación de monitoreo con sensores PM2.5 cerca en OpenAQ.")
+            warn1 = "No se encontró ninguna estación de monitoreo con sensores PM2.5 cerca en OpenAQ."
+            st.session_state.last_search_log.append({"level": "warning", "text": warn1})
+            st.warning(warn1)
             return None, None, "No se encontraron estaciones"
+        # Limitar el número de estaciones a consultar para evitar rate limit
+        limited_locations = candidate_locations[:DEFAULT_MAX_STATIONS_TO_QUERY]
         valid_measurements = []
-        for i, location in enumerate(candidate_locations):
+        # Resetear aviso de rate limit por cada búsqueda
+        st.session_state.openaq_rate_limited = False
+        for i, location in enumerate(limited_locations):
             loc_name, distance = location.get('name', 'N/A'), location.get('distance')
             dist_label = f"a {distance/1000:.1f} km" if distance is not None else ""
-            st.info(f"Paso #{i+1}: Revisando '{loc_name}' {dist_label}...")
+            step = f"Paso #{i+1}: Revisando '{loc_name}' {dist_label}..."
+            st.session_state.last_search_log.append({"level": "info", "text": step})
+            st.info(step)
             pm25_sensor_id = get_pm25_sensor_id_from_location(location)
             if not pm25_sensor_id: continue
             v, dt = get_latest_measurement_from_sensor(pm25_sensor_id)
             if v is not None and dt is not None: valid_measurements.append({"value": v, "dt_iso": dt, "source": f"OpenAQ • {loc_name}"})
+        # Mostrar un único aviso si hubo límite de tasa
+        if st.session_state.get('openaq_rate_limited'):
+            rate = "Has alcanzado el límite de solicitudes de OpenAQ. Algunas estaciones no pudieron consultarse."
+            st.session_state.last_search_log.append({"level": "warning", "text": rate})
+            st.warning(rate)
         if not valid_measurements:
-            st.warning("Ninguna estación cercana reportó datos de PM2.5 frescos.")
+            warn2 = "Ninguna estación cercana reportó datos de PM2.5 frescos."
+            st.session_state.last_search_log.append({"level": "warning", "text": warn2})
+            st.warning(warn2)
             return None, None, "Estaciones sin datos frescos"
         most_recent = sorted(valid_measurements, key=lambda x: x['dt_iso'], reverse=True)[0]
-        st.success(f"✓ Usando la medición más reciente de: '{most_recent['source']}'")
+        ok = f"✓ Usando la medición más reciente de: '{most_recent['source']}'"
+        st.session_state.last_search_log.append({"level": "success", "text": ok})
+        st.success(ok)
         return (most_recent['value'], most_recent['dt_iso'], most_recent['source'])
     except Exception as e:
         st.error(f"Error inesperado: {e}")
@@ -167,6 +211,8 @@ with st.sidebar:
         st.write("---")
         st.subheader("⚙️ Opciones de Búsqueda")
         radius_input = st.slider("Radio de búsqueda (km)", 1, 25, 15)
+        st.session_state.radius_input = radius_input
+        # El límite de estaciones a revisar está fijado en DEFAULT_MAX_STATIONS_TO_QUERY
         with st.expander("Simulación de Alertas (Demo)"):
             if st.button("🔴 Activar Alerta Ozono", use_container_width=True): st.session_state.alert_ozone = True
             if st.button("✅ Desactivar Alerta", use_container_width=True): st.session_state.alert_ozone = False
@@ -248,8 +294,30 @@ if page == "Inicio":
             with st.spinner("Buscando datos..."):
                 if st.session_state.coords_to_process:
                     lat, lon = st.session_state.coords_to_process["lat"], st.session_state.coords_to_process["lon"]
-                    with st.expander("Ver proceso de búsqueda detallado..."):
-                        pm25, dt_iso, source = get_pm25(lat, lon, radius_input)
+                    current_query = (round(float(lat), 4), round(float(lon), 4), int(radius_input))
+                    if st.session_state.last_query != current_query:
+                        with st.expander("Ver proceso de búsqueda detallado..."):
+                            pm25, dt_iso, source = get_pm25(lat, lon, radius_input)
+                        st.session_state.last_query = current_query
+                        st.session_state.last_result = {"pm25": pm25, "dt_iso": dt_iso, "source": source}
+                    else:
+                        # Reusar últimos resultados para evitar consultas repetidas en cada rerun
+                        cached = st.session_state.last_result or {}
+                        with st.expander("Ver proceso de búsqueda detallado..."):
+                            for entry in st.session_state.get('last_search_log', []):
+                                lvl = entry.get('level')
+                                txt = entry.get('text', '')
+                                if lvl == 'success':
+                                    st.success(txt)
+                                elif lvl == 'warning':
+                                    st.warning(txt)
+                                elif lvl == 'error':
+                                    st.error(txt)
+                                else:
+                                    st.info(txt)
+                        pm25 = cached.get("pm25")
+                        dt_iso = cached.get("dt_iso")
+                        source = cached.get("source", "Sin datos")
 
             if pm25 is not None:
                 pm25_display, datetime_for_metric = pm25, iso_label(dt_iso)
@@ -295,12 +363,39 @@ if page == "Inicio":
                 folium.Marker([lat, lon], popup="📍 Escuela", icon=folium.Icon(color="blue", icon="school", prefix="fa")).add_to(m)
                 
                 candidate_locations = find_locations_by_coordinates(lat, lon, radius_input)
-                for loc in candidate_locations:
+                for idx, loc in enumerate(candidate_locations):
                     coords = loc["coordinates"]["latitude"], loc["coordinates"]["longitude"]
-                    pm25_value = get_pm25_for_station(loc)
-                    if pm25_value is None: continue
-                    color, _ = get_color_and_opacity(pm25_value)
-                    folium.Marker(coords, popup=f"{loc.get('name', 'N/A')}<br>PM2.5: {pm25_value:.1f}", icon=folium.Icon(color=color, icon="cloud")).add_to(m)
+                    # Para evitar exceso de llamadas, solo obtener PM2.5 para las primeras N estaciones
+                    pm25_value = get_pm25_for_station(loc) if idx < DEFAULT_MAX_STATIONS_TO_QUERY else None
+                    # Safe formatting for PM2.5
+                    pm25_label = f"{pm25_value:.1f}" if isinstance(pm25_value, (int, float)) else "N/A"
+                    color, _ = get_color_and_opacity(pm25_value) if isinstance(pm25_value, (int, float)) else ("gray", 0.2)
+                    folium.Marker(
+                        coords,
+                        popup=f"{loc.get('name', 'N/A')}<br>PM2.5: {pm25_label}",
+                        icon=folium.Icon(color=color, icon="cloud")
+                    ).add_to(m)
+
+                # WAQI fallback: show stations if OpenAQ has none or to complement
+                if not candidate_locations:
+                    st.info("No se hallaron estaciones en OpenAQ. Intentando con WAQI…")
+                try:
+                    waqi_stations = get_waqi_stations_nearby(lat, lon, radius=float(radius_input))
+                except Exception:
+                    waqi_stations = []
+
+                if waqi_stations:
+                    for stn in waqi_stations:
+                        w_coords = [stn['latitude'], stn['longitude']]
+                        dist_km = stn.get('distance_km')
+                        dist_label = f"{dist_km:.1f} km" if isinstance(dist_km, (int, float)) else "N/A"
+                        aqi_val = stn.get('aqi')
+                        aqi_label = f"{aqi_val}" if isinstance(aqi_val, (int, float)) else (aqi_val or "N/A")
+                        popup = f"WAQI • {stn['name']}<br>AQI: {aqi_label}<br>Dist: {dist_label}"
+                        folium.Marker(w_coords, popup=popup, icon=folium.Icon(color="purple", icon="cloud" )).add_to(m)
+                else:
+                    if not candidate_locations:
+                        st.warning("No hay estaciones dentro del radio establecido en OpenAQ ni WAQI.")
                 
                 st_folium(m, width=None, height=450)
                 st.caption(f"**Fuente de Datos Principal:** {source}")
