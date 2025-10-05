@@ -128,33 +128,88 @@ def send_bulk_whatsapp(body: str, *, use_content_template: bool = True) -> int:
     return success_count
 from typing import Optional, Tuple
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+def _create_retry_session(total: int = 3, backoff_factor: float = 0.8) -> requests.Session:
+    """Create a requests Session with retry/backoff for transient network errors."""
+    session = requests.Session()
+    retry = Retry(
+        total=total,
+        read=total,
+        connect=total,
+        status=total,
+        backoff_factor=backoff_factor,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET", "POST"),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
 
 @st.cache_data(ttl=3600) # Cache results for an hour to avoid repeated API calls
 def get_coords_from_city(city_name: str) -> Optional[Tuple[float, float]]:
     """
-    Usa la API de Nominatim (OpenStreetMap) para obtener las coordenadas de una ciudad.
+    Obtiene coordenadas para una ciudad usando Nominatim (OSM) con reintentos y
+    cabeceras adecuadas. Si falla o no hay resultados, usa Open‑Meteo Geocoding
+    como respaldo.
     """
+    city_query = (city_name or "").strip()
+    if not city_query:
+        return None
+
+    session = _create_retry_session()
+
+    # 1) Intento con Nominatim (respetando política de uso)
     try:
-        url = "https://nominatim.openstreetmap.org/search"
-        params = {'q': city_name, 'format': 'json', 'limit': 1}
-        # Es buena práctica enviar un User-Agent que identifique tu aplicación
-        headers = {'User-Agent': 'SchoolAirIndexApp/1.0 (your-email@example.com)'}
-        
-        response = requests.get(url, params=params, headers=headers, timeout=10)
-        response.raise_for_status() # Lanza un error si la petición falla
+        nominatim_url = "https://nominatim.openstreetmap.org/search"
+        params = {"q": city_query, "format": "json", "limit": 1}
+        headers = {
+            # Incluir email o url de contacto según política de Nominatim
+            "User-Agent": "SchoolAirIndex/1.0 (contact: your-email@example.com)",
+            "Accept": "application/json",
+            "Accept-Language": "es",
+            "Referer": "https://school-air-index.app/",
+        }
+        response = session.get(nominatim_url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
         results = response.json()
-        
-        if results:
-            lat = float(results[0]["lat"])
-            lon = float(results[0]["lon"])
+        if isinstance(results, list) and results:
+            lat = float(results[0].get("lat"))
+            lon = float(results[0].get("lon"))
             return lat, lon
-        else:
-            return None
     except requests.exceptions.RequestException as e:
-        st.error(f"Error de red al buscar la ciudad: {e}")
+        # Continuar con fallback
+        st.info("No se pudo contactar a Nominatim. Probando proveedor alternativo…")
+    except Exception as e:
+        # Cualquier otro error: continuar con fallback
+        st.info("Hubo un problema al interpretar la respuesta de Nominatim. Probando proveedor alternativo…")
+
+    # 2) Fallback con Open‑Meteo Geocoding API
+    try:
+        om_url = "https://geocoding-api.open-meteo.com/v1/search"
+        # Open‑Meteo soporta atributos como language y count. Usa name con la cadena completa.
+        params = {"name": city_query, "count": 1, "language": "es", "format": "json"}
+        headers = {"User-Agent": "SchoolAirIndex/1.0 (contact: your-email@example.com)", "Accept": "application/json"}
+        resp = session.get(om_url, params=params, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json() or {}
+        results = data.get("results") or []
+        if isinstance(results, list) and results:
+            first = results[0]
+            lat = float(first.get("latitude"))
+            lon = float(first.get("longitude"))
+            return lat, lon
+        return None
+    except requests.exceptions.RequestException as e:
+        st.error(
+            "Error de red al geocodificar. Verifica conectividad del servidor y políticas del proveedor."
+        )
         return None
     except Exception as e:
-        st.error(f"Ocurrió un error inesperado al geocodificar: {e}")
+        st.error("Ocurrió un error inesperado al geocodificar la ciudad.")
         return None
 def iso_label(dt_iso: Optional[str]) -> Optional[str]:
     if not dt_iso: return None
