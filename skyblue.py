@@ -359,4 +359,87 @@ else:
         footer += " • **Alerta:** Datos TEMPO simulados para demo"
     st.caption(footer)
 
+    import folium
+    from streamlit_folium import st_folium
 
+    st.subheader("🗺️ Mapa combinado - Estaciones, Cobertura TEMPO y Rutas")
+
+    def get_color_for_value(val: float) -> str:
+        """Devuelve color tipo semáforo para PM2.5"""
+        if val <= 35:
+            return "green"
+        elif val <= 55:
+            return "orange"
+        return "red"
+
+    # Crear mapa centrado en la ubicación del usuario
+    m = folium.Map(location=[lat, lon], zoom_start=11)
+
+    # --------------------------
+    # 1. Ubicación del usuario
+    # --------------------------
+    folium.Marker(
+        [lat, lon],
+        popup="📍 Tú estás aquí",
+        tooltip="Tu ubicación",
+        icon=folium.Icon(color="blue", icon="user")
+    ).add_to(m)
+
+    # --------------------------
+    # 2. Estaciones OpenAQ
+    # --------------------------
+    candidate_locations = find_locations_by_coordinates(lat, lon, radius_km=radius_input)
+
+    for loc in candidate_locations:
+        coords = loc["coordinates"]["latitude"], loc["coordinates"]["longitude"]
+        station_name = loc.get("name", "Estación sin nombre")
+        # Color basado en tu medición seleccionada
+        color = get_color_for_value(pm25_display)
+        folium.Marker(
+            coords,
+            popup=f"{station_name}",
+            tooltip=station_name,
+            icon=folium.Icon(color=color, icon="cloud")
+        ).add_to(m)
+
+    # --------------------------
+    # 3. Bounding Box NASA TEMPO
+    # --------------------------
+    bbox = [
+        [lat - 0.5, lon - 0.5],
+        [lat - 0.5, lon + 0.5],
+        [lat + 0.5, lon + 0.5],
+        [lat + 0.5, lon - 0.5],
+        [lat - 0.5, lon - 0.5]
+    ]
+    folium.PolyLine(
+        locations=bbox,
+        color="blue",
+        weight=2,
+        tooltip="Área cobertura NASA TEMPO (aprox.)"
+    ).add_to(m)
+
+    # --------------------------
+    # 4. Rutas seguras / peligrosas
+    # --------------------------
+    # Simulamos un par de rutas en la ciudad
+    rutas = [
+        [[lat, lon], [lat + 0.02, lon + 0.01], [lat + 0.04, lon + 0.02]],
+        [[lat, lon], [lat - 0.02, lon - 0.01], [lat - 0.04, lon - 0.02]]
+    ]
+
+    ruta_color = get_color_for_value(pm25_display)
+    tooltip_text = "Ruta segura" if ruta_color == "green" else ("Ruta con precauciones" if ruta_color == "orange" else "Ruta peligrosa")
+
+    for ruta in rutas:
+        folium.PolyLine(
+            locations=ruta,
+            color=ruta_color,
+            weight=4,
+            tooltip=tooltip_text
+        ).add_to(m)
+
+    # --------------------------
+    # Mostrar mapa en Streamlit
+    # --------------------------
+    st_folium(m, width=750, height=550)
