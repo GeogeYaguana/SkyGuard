@@ -150,7 +150,7 @@ with st.sidebar:
     st.divider()
 
     if page == "Inicio":
-        st.info("ℹ️ Para buscar por tu ubicación actual,realiza click en el icono inferio luego tu navegador te pedirá permiso. Por favor, haz clic en 'Permitir'.")
+        st.info("ℹ️ Para buscar por tu ubicación actual,realiza click en el icono inferior luego tu navegador te pedirá permiso. Por favor, haz clic en 'Permitir'.")
         location_data = streamlit_geolocation()
         if st.button("Buscar en mi Ubicación", use_container_width=True, type="primary"):
             if location_data and location_data.get('latitude'):
@@ -183,67 +183,73 @@ with st.sidebar:
 # -----------------------------
 
 # --- PÁGINA 1: INICIO ---
+# --- PÁGINA 1: INICIO ---
+# --- PÁGINA 1: INICIO ---
 if page == "Inicio":
     if not st.session_state.search_triggered:
-        # --- PANTALLA DE BIENVENIDA MEJORADA CON GUÍA DE PASOS ---
+        # --- PANTALLA DE BIENVENIDA CON CALLOUT AÑADIDO ---
         st.markdown("### ¡Hola, docente! 🍎")
         st.markdown(
             "Bienvenido/a al **School Air Index**. Esta herramienta te ayuda a tomar decisiones informadas sobre las "
             "actividades al aire libre para proteger la salud de tus estudiantes."
         )
         st.info("#### Sigue estos sencillos pasos para empezar:")
-
-        # Usamos columnas para presentar la guía de forma clara
         col1, col2 = st.columns([0.5, 0.5], gap="large")
-
         with col1:
-            st.subheader("Paso 1: Elige tu Ubicación 📍")
+            st.subheader("Paso 1: Selecciona tu ubicación")
             st.markdown("""
             Usa el **panel de la izquierda** para indicarnos dónde te encuentras. Tienes dos opciones:
-            
-            - **A) Usar mi Ubicación Actual:**
-              - Haz clic en el botón **"Buscar en mi Ubicación"**.
-              - Tu navegador te pedirá permiso para acceder a tu ubicación. **¡Es crucial que hagas clic en 'Permitir'!**
-            
-            - **B) Ingresar Coordenadas:**
-              - Escribe la latitud y longitud manualmente si las conoces y haz clic en "Buscar por Coordenadas".
             """)
-            st.image("https://media.istockphoto.com/id/586087898/es/vector/icono-de-destino-signo-de-punter%C3%ADa-en-el-punto-de-mira.jpg?s=170667a&w=0&k=20&c=oOWMBKL5gKBSHv7pHpZHgfeqen4zt0W99_O1M8YyhSc=", caption="Asegúrate de permitir el acceso a tu ubicación en el navegador.")
 
+            # Opción A
+            st.markdown("##### A) Usar mi Ubicación Actual 🛰️")
+            st.markdown("Para que el navegador te pida permiso de ubicación, primero debes hacer clic en el botón **'Buscar en mi Ubicación'**.")
+            st.image(
+                "icono.jpg",
+                width=80,
+            )
+            st.warning("**Importante:** Después de hacer clic, tu navegador mostrará una ventana emergente. **¡Es crucial que selecciones 'Permitir' en esa solicitud!**")
+            st.markdown("---")
+
+            # Opción B
+            st.markdown("##### B) Ingresar Coordenadas ✍️")
+            st.markdown("Escribe la latitud y longitud manualmente y luego presiona el botón **'Buscar por Coordenadas'**.")
+            
+            # --- CALLOUT AÑADIDO ---
+            st.info("""
+            **⚙️ Personaliza tu Búsqueda:** No olvides que también puedes ajustar el **radio de búsqueda** usando el deslizador en el panel de la izquierda para definir qué tan lejos buscar estaciones.
+            """)
+            # --- FIN DEL CALLOUT ---
 
         with col2:
             st.subheader("Paso 2: Analiza el Informe 📊")
             st.markdown("""
-            Una vez que busques, en esta pantalla principal aparecerá un informe completo con:
-            - Un **resumen claro** del nivel de partículas finas (PM2.5).
-            - Un **código de colores** tipo semáforo (🟢, 🟡, 🔴) fácil de entender.
-            - **Recomendaciones rápidas** para las actividades escolares del día.
-            - Un **mapa interactivo** con tu ubicación y las estaciones de monitoreo cercanas.
+            Una vez que busques, aparecerá un informe con:
+            - Un **resumen claro** con el nivel de PM2.5 y un código de colores (🟢, 🟡, 🔴).
+            - Un **mapa interactivo** con tu ubicación y las estaciones cercanas.
+            - **Recomendaciones rápidas** para el día.
             """)
-            
             st.subheader("Paso 3: Profundiza tu Conocimiento 📚")
             st.markdown("""
-            ¡No te detengas en el resumen! Usa la **barra de navegación superior** para explorar las otras secciones:
+            Usa la **barra de navegación superior** para explorar:
             - **Impacto en la Salud:** Entiende la evidencia científica detrás de los riesgos.
-            - **Guía de Recomendaciones:** Encuentra un plan de acción detallado para cada nivel de alerta.
+            - **Guía de Recomendaciones:** Encuentra un plan de acción detallado para cada nivel.
             """)
-        
         st.success("**¡Listo! Ya puedes usar el panel de la izquierda para comenzar tu primera búsqueda.**")
 
-
-    else: # Esta es la pantalla de resultados que ya tenías
+    else:
+        # --- PANTALLA DE RESULTADOS (SIN CAMBIOS) ---
         col1, col2 = st.columns([0.5, 0.5], gap="large")
         with col1:
             pm25, dt_iso, source = (None, None, "Sin datos")
+            radius_input = st.session_state.get('radius_input', 15)
+            
             with st.spinner("Buscando datos..."):
                 if st.session_state.coords_to_process:
-                    # Asegúrate de que radius_input esté definido. Si no, dale un valor por defecto.
-                    if 'radius_input' not in locals():
-                        radius_input = 15 # Valor por defecto si no está definido
                     lat, lon = st.session_state.coords_to_process["lat"], st.session_state.coords_to_process["lon"]
                     with st.expander("Ver proceso de búsqueda detallado..."):
                         pm25, dt_iso, source = get_pm25(lat, lon, radius_input)
-            
+
             if pm25 is not None:
                 pm25_display, datetime_for_metric = pm25, iso_label(dt_iso)
             else:
@@ -254,35 +260,39 @@ if page == "Inicio":
             nivel, accion = pm25_to_level(pm25_display)
             if st.session_state.alert_ozone:
                 nivel, accion = "🔴 Rojo (TEMPO Ozono)", "Ozono elevado: Evitar actividades al aire libre"
-            
+
             st.subheader("Resumen 🌬️")
             with st.container(border=True):
                 c1, c2 = st.columns(2)
                 with c1: st.metric(f"PM2.5 (µg/m³)", f"{pm25_display:.1f}")
-                with c2: st.caption(f"Última Medición:{datetime_for_metric}")
+                with c2: st.caption(f"Última Medición:\n{datetime_for_metric}")
                 st.subheader(f"Nivel: {nivel}")
                 if "Verde" in nivel: st.success(f"**Recomendación:** {accion}")
                 elif "Amarillo" in nivel: st.warning(f"**Recomendación:** {accion}")
                 else: st.error(f"**Recomendación:** {accion}")
+
+            st.subheader("Recomendaciones Clave 🏫")
+            with st.container(border=True):
+                if "Verde" in nivel:
+                    st.markdown("##### 🟢 **Resumen para Nivel Bueno:**")
+                    st.markdown("- **Actividades Exteriores:** ¡Luz verde! Realizar sin restricciones.\n- **Ventilación:** Mantener ventanas abiertas.")
+                elif "Amarillo" in nivel:
+                    st.markdown("##### 🟡 **Resumen para Nivel Moderado:**")
+                    st.markdown("- **Actividades Exteriores:** Reducir la intensidad y duración.\n- **Grupos Sensibles:** Prestar especial atención.")
+                else:
+                    st.markdown("##### 🔴 **Resumen para Nivel Insalubre:**")
+                    st.markdown("- **Actividades Exteriores:** **CANCELAR**.\n- **Ventilación:** **CERRAR** ventanas.")
             
-            st.subheader("Recomendaciones 🏫")
-            with st.expander("🟢 **Nivel Bueno**", expanded="Verde" in nivel): st.markdown("- **Actividades:** ¡Adelante! Disfruten del patio.\n- **Ventilación:** Abrir ventanas.")
-            with st.expander("🟡 **Nivel Moderado**", expanded="Amarillo" in nivel): st.markdown("- **Actividades:** Reducir intensidad.\n- **Grupos sensibles:** Cuidado extra.")
-            with st.expander("🔴 **Nivel Insalubre**", expanded="Rojo" in nivel): st.markdown("- **Actividades:** **Evitar** el aire libre.\n- **Ventilación:** **Cerrar** ventanas.")
+            st.info("Para ver el plan de acción completo, haz clic en la pestaña **Guía de Recomendaciones** en el menú superior. 👆")
 
         with col2:
             st.subheader("🗺️ Mapa de Monitoreo")
-            # Asegúrate de que lat y lon estén definidos antes de usarlos
             if st.session_state.coords_to_process:
                 lat = st.session_state.coords_to_process["lat"]
                 lon = st.session_state.coords_to_process["lon"]
-                if 'radius_input' not in locals():
-                        radius_input = 15 # Valor por defecto
-
                 m = folium.Map(location=[lat, lon], zoom_start=11)
                 folium.Marker([lat, lon], popup="📍 Escuela", icon=folium.Icon(color="blue", icon="school", prefix="fa")).add_to(m)
                 
-                # Usamos una variable local para no volver a llamar a la API si no es necesario
                 candidate_locations = find_locations_by_coordinates(lat, lon, radius_input)
                 for loc in candidate_locations:
                     coords = loc["coordinates"]["latitude"], loc["coordinates"]["longitude"]
@@ -291,7 +301,7 @@ if page == "Inicio":
                     color, _ = get_color_and_opacity(pm25_value)
                     folium.Marker(coords, popup=f"{loc.get('name', 'N/A')}<br>PM2.5: {pm25_value:.1f}", icon=folium.Icon(color=color, icon="cloud")).add_to(m)
                 
-                st_folium(m, width=None, height=450, returned_objects=[])
+                st_folium(m, width=None, height=450)
                 st.caption(f"**Fuente de Datos Principal:** {source}")
 # --- PÁGINA 2: IMPACTO EN LA SALUD (VERSIÓN MEJORADA CON FUENTES) ---
 elif page == "Impacto en la Salud":
