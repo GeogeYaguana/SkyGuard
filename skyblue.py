@@ -183,8 +183,7 @@ with st.sidebar:
 # -----------------------------
 
 # --- PÁGINA 1: INICIO ---
-# --- PÁGINA 1: INICIO ---
-# --- PÁGINA 1: INICIO ---
+
 if page == "Inicio":
     if not st.session_state.search_triggered:
         # --- PANTALLA DE BIENVENIDA CON CALLOUT AÑADIDO ---
@@ -202,12 +201,14 @@ if page == "Inicio":
             """)
 
             # Opción A
-            st.markdown("##### A) Usar mi Ubicación Actual 🛰️")
-            st.markdown("Para que el navegador te pida permiso de ubicación, primero debes hacer clic en el botón **'Buscar en mi Ubicación'**.")
+            st.markdown("##### A) Usar tu Ubicación Actual por  🛰️")
+            st.markdown("Primero debes dirigirte a la izquierda y hacer clic en el siguiente  icono:.")
             st.image(
                 "icono.jpg",
                 width=80,
             )
+            st.markdown('Segundo: Debes hacer click en el boton rojo "Buscar en mi ubicacion"')
+
             st.warning("**Importante:** Después de hacer clic, tu navegador mostrará una ventana emergente. **¡Es crucial que selecciones 'Permitir' en esa solicitud!**")
             st.markdown("---")
 
@@ -225,7 +226,7 @@ if page == "Inicio":
             st.subheader("Paso 2: Analiza el Informe 📊")
             st.markdown("""
             Una vez que busques, aparecerá un informe con:
-            - Un **resumen claro** con el nivel de PM2.5 y un código de colores (🟢, 🟡, 🔴).
+            - Un **resumen claro** con el nivel de PM2.5 (Indice de Contaminacion del aire) y un código de colores (🟢, 🟡, 🔴).
             - Un **mapa interactivo** con tu ubicación y las estaciones cercanas.
             - **Recomendaciones rápidas** para el día.
             """)
