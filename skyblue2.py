@@ -5,7 +5,8 @@ from typing import Optional, Tuple, List, Dict
 import requests
 import streamlit as st
 from streamlit_geolocation import streamlit_geolocation
-
+import folium
+from streamlit_folium import st_folium
 # Import WAQI as fallback
 from data_sources.waqi import get_waqi_by_coordinates
 
@@ -251,11 +252,40 @@ def get_pm25(latitude: float, longitude: float, radius_km: int) -> Tuple[Optiona
         st.info("🔄 Intentando con WAQI como respaldo...")
         return get_pm25_from_waqi(latitude, longitude)
 
+# --------------------------
+# Helpers para pintar cada estación según su PM2.5
+# --------------------------
+def get_color_and_opacity(pm25: float) -> Tuple[str, float]:
+    """Devuelve color + intensidad tipo semáforo según el valor de PM2.5."""
+    if pm25 <= 35:
+        color = "green"
+        opacity = 0.15 + (pm25 / 35) * (0.6 - 0.15)
+    elif pm25 <= 55:
+        color = "orange"
+        opacity = 0.15 + ((pm25 - 35) / (55 - 35)) * (0.6 - 0.15)
+    else:
+        color = "red"
+        max_val = min(pm25, 150)  # limitamos para no explotar
+        opacity = 0.15 + ((max_val - 55) / (150 - 55)) * (0.6 - 0.15)
+    return color, opacity
+
+def get_pm25_for_station(location: Dict) -> Optional[float]:
+    """Obtiene el último valor de PM2.5 para una estación específica."""
+    sensor_id = get_pm25_sensor_id_from_location(location)
+    if not sensor_id:
+        return None
+    v, _ = get_latest_measurement_from_sensor(sensor_id)
+    return v
+
+
+
+
+
 # -----------------------------
-# UI de la Barra Lateral
+# UI de la Barra Lateral (Sin cambios)
 # -----------------------------
 with st.sidebar:
-    st.subheader("📍 Elige tu Ubicación")
+    st.image("logo.png", width=150) # El logo tendrá un ancho de 150 píxeles    st.subheader("📍 Elige tu Ubicación")
 
     # --- Opción 1: Geolocalización Automática ---
     st.markdown("**Opción A: Usar mi ubicación actual**")
@@ -273,7 +303,6 @@ with st.sidebar:
 
     # --- Opción 2: Entrada Manual ---
     st.markdown("**Opción B: Ingresar coordenadas**")
-    # Usamos Ciudad de México como ejemplo por defecto
     lat_input = st.number_input("Latitud", value=19.4326, format="%.4f", help="Ej: 40.7128 (Nueva York)")
     lon_input = st.number_input("Longitud", value=-99.1332, format="%.4f", help="Ej: -74.0060 (Nueva York)")
 
@@ -293,37 +322,49 @@ with st.sidebar:
         help="Define qué tan lejos buscar estaciones de monitoreo."
     )
 
-    # --- Simulación de Alertas ---
-    st.write("---")
-    st.markdown("**Simulación de Alertas**")
-    if st.button("🔴 Activar Alerta Ozono", use_container_width=True): st.session_state.alert_ozone = True
-    if st.button("✅ Desactivar Alerta", use_container_width=True): st.session_state.alert_ozone = False
+    # --- Simulación de Alertas (en un expander para no distraer) ---
+    with st.expander("Simulación de Alertas (Demo)"):
+        if st.button("🔴 Activar Alerta Ozono", use_container_width=True): st.session_state.alert_ozone = True
+        if st.button("✅ Desactivar Alerta", use_container_width=True): st.session_state.alert_ozone = False
+
 
 # -----------------------------
 # Flujo Principal y UI de Resultado
 # -----------------------------
+
+# --- Pantalla de Bienvenida ---
 if not st.session_state.search_triggered:
-    st.info("👋 ¡Bienvenido! Usa una de las opciones en la barra lateral para buscar la calidad del aire.")
+    st.markdown("### ¡Hola, docente! 🍎")
+    st.markdown(
+        "Esta herramienta te ayuda a conocer la calidad del aire cerca de tu escuela "
+        "para tomar decisiones informadas sobre las actividades al aire libre."
+    )
+    st.info("👋 **Para comenzar, usa una de las opciones en el panel de la izquierda.**")
+    st.image("https://i.imgur.com/fA2x1Bq.png", caption="Los niveles de calidad del aire se miden con un semáforo de colores.")
+
+
+# --- Pantalla de Resultados ---
 else:
     pm25, dt_iso, source = (None, None, "Sin datos de OpenAQ")
     
-    if st.session_state.coords_to_process:
-        lat = st.session_state.coords_to_process["lat"]
-        lon = st.session_state.coords_to_process["lon"]
-        pm25, dt_iso, source = get_pm25(lat, lon, radius_input)
+    with st.spinner("Buscando datos de calidad del aire... 🛰️"):
+        if st.session_state.coords_to_process:
+            lat = st.session_state.coords_to_process["lat"]
+            lon = st.session_state.coords_to_process["lon"]
+
+            # Ocultamos el log técnico en un expander para una UI más limpia
+            with st.expander("Ver proceso de búsqueda detallado..."):
+                pm25, dt_iso, source = get_pm25(lat, lon, radius_input)
     
     # Prepara la etiqueta de la fecha/hora para la métrica
     datetime_for_metric = ""
-
     if pm25 is not None:
         pm25_display = pm25
-        # Usa la fecha y hora de la MEDICIÓN, convertida a formato local
         datetime_for_metric = iso_label(dt_iso)
     else:
-        st.warning("No se pudo obtener un valor real de PM2.5. Usando valor simulado (42 µg/m³).")
+        st.warning("No se pudo obtener un valor real de PM2.5. Mostrando un valor de ejemplo.")
         pm25_display = 42.0
         source = "Valor simulado"
-        # Para el valor simulado, usa la HORA ACTUAL
         local_tz = timezone(timedelta(hours=-5))
         now_local = datetime.now(local_tz)
         datetime_for_metric = now_local.strftime("%d/%m/%Y - %I:%M %p")
@@ -333,113 +374,118 @@ else:
         nivel = "🔴 Rojo (TEMPO Ozono)"; accion = "Ozono elevado: Evitar actividades al aire libre"
         st.info("🚨 **Alerta de Ozono (TEMPO) activa.**")
 
-    # Se modifica el label de la métrica para usar la fecha/hora correspondiente
-    st.metric(f"PM2.5 (µg/m³) - {datetime_for_metric}", f"{pm25_display:.1f}", help="Partículas Finas (≤ 2.5µm).")
+    # --- Tarjeta de Resumen Principal ---
+    st.subheader("Resumen de Calidad del Aire 🌬️")
+    with st.container(border=True):
+        col1, col2 = st.columns([0.4, 0.6])
+        with col1:
+            st.metric(f"PM2.5 (µg/m³)", f"{pm25_display:.1f}", help="Partículas Finas (≤ 2.5µm).")
+            st.caption(f"Medición de las {datetime_for_metric}")
+        with col2:
+            st.subheader(f"Nivel: {nivel}")
+            if "Verde" in nivel: st.success(f"**Recomendación Principal:** {accion}")
+            elif "Amarillo" in nivel: st.warning(f"**Recomendación Principal:** {accion}")
+            else: st.error(f"**Recomendación Principal:** {accion}")
+
+    st.divider()
+
+    # --- Sección Educativa y Recomendaciones Detalladas ---
+    st.subheader("Recomendaciones para el Entorno Escolar 🏫")
     
-    st.subheader(f"Índice de Calidad del Aire: {nivel}")
-    if "Verde" in nivel: st.success(f"**Acción:** {accion}")
-    elif "Amarillo" in nivel: st.warning(f"**Acción:** {accion}")
-    else: st.error(f"**Acción:** {accion}")
+    with st.expander("🟢 **Nivel Bueno**: ¿Qué significa?", expanded="Verde" in nivel):
+        st.markdown(
+            """
+            - **Actividades al aire libre:** ¡Adelante! Es un buen día para que los estudiantes disfruten del patio, deportes y recreo sin restricciones.
+            - **Ventilación:** Se recomienda abrir las ventanas de las aulas para permitir la circulación de aire fresco.
+            - **Grupos sensibles:** No se esperan riesgos para la salud.
+            """
+        )
 
-    st.write("### Recomendaciones Deportivas")
-    c1, c2, c3 = st.columns(3)
-    def colorize_sport(label: str, level: str) -> str:
-        if "Verde" in nivel: return f"🟢 **{label}** — OK"
-        if "Amarillo" in nivel: return f"🟡 **{label}** — Precauciones"
-        return f"🔴 **{label}** — No recomendado"
-    with c1: st.markdown(colorize_sport("⚽ Fútbol", nivel))
-    with c2: st.markdown(colorize_sport("🏃 Atletismo", nivel))
-    with c3: st.markdown(colorize_sport("🤸 Recreación", nivel))
+    with st.expander("🟡 **Nivel Moderado**: ¿Qué significa?", expanded="Amarillo" in nivel):
+        st.markdown(
+            """
+            - **Actividades al aire libre:** Se pueden realizar, pero considere reducir la intensidad de los ejercicios prolongados (ej. carreras largas).
+            - **Ventilación:** Ventile las aulas, pero esté atento a posibles olores o bruma en el exterior.
+            - **Grupos sensibles:** Estudiantes con asma o problemas respiratorios podrían experimentar síntomas. Aconséjeles tomarlo con calma.
+            """
+        )
 
-    footer = f"**Fuente PM2.5:** {source}"
-    # Si no es simulado, muestra la fecha de la última actualización
-    if "simulado" not in source and datetime_for_metric:
-        footer += f" • **Última Actualización:** {datetime_for_metric}"
-    if st.session_state.alert_ozone:
-        footer += " • **Alerta:** Datos TEMPO simulados para demo"
-    st.caption(footer)
+    with st.expander("🔴 **Nivel Insalubre**: ¿Qué significa?", expanded="Rojo" in nivel):
+        st.markdown(
+            """
+            - **Actividades al aire libre:** **Deben evitarse.** Cancele o posponga las clases de educación física, recreos y cualquier evento al aire libre.
+            - **Ventilación:** **Mantenga las ventanas de las aulas cerradas** para evitar que la contaminación ingrese a los espacios interiores.
+            - **Grupos sensibles:** Todos los estudiantes, especialmente aquellos con condiciones preexistentes, están en riesgo. Monitoree de cerca cualquier síntoma como tos o dificultad para respirar.
+            """
+        )
 
+    st.divider()
+
+    # --- Mapa Visual ---
+    st.subheader("🗺️ Mapa de Monitoreo en tu Zona")
     import folium
     from streamlit_folium import st_folium
 
-    st.subheader("🗺️ Mapa combinado - Estaciones, Cobertura TEMPO y Rutas")
-
-    def get_color_for_value(val: float) -> str:
-        """Devuelve color tipo semáforo para PM2.5"""
-        if val <= 35:
-            return "green"
-        elif val <= 55:
-            return "orange"
-        return "red"
-
-    # Crear mapa centrado en la ubicación del usuario
     m = folium.Map(location=[lat, lon], zoom_start=11)
 
-    # --------------------------
     # 1. Ubicación del usuario
-    # --------------------------
     folium.Marker(
         [lat, lon],
-        popup="📍 Tú estás aquí",
+        popup="📍 Escuela / Punto de Búsqueda",
         tooltip="Tu ubicación",
-        icon=folium.Icon(color="blue", icon="user")
+        icon=folium.Icon(color="blue", icon="school", prefix="fa")
     ).add_to(m)
 
-    # --------------------------
-    # 2. Estaciones OpenAQ
-    # --------------------------
+    # 2. Estaciones OpenAQ (cada una con su valor real)
     candidate_locations = find_locations_by_coordinates(lat, lon, radius_km=radius_input)
 
     for loc in candidate_locations:
         coords = loc["coordinates"]["latitude"], loc["coordinates"]["longitude"]
         station_name = loc.get("name", "Estación sin nombre")
-        # Color basado en tu medición seleccionada
-        color = get_color_for_value(pm25_display)
+        pm25_value = get_pm25_for_station(loc)
+        
+        if pm25_value is None:
+            continue
+
+        color, opacity = get_color_and_opacity(pm25_value)
+
+        # Marcador con icono
         folium.Marker(
             coords,
-            popup=f"{station_name}",
-            tooltip=station_name,
+            popup=f"{station_name}<br>PM2.5: {pm25_value:.1f} µg/m³",
+            tooltip=f"{station_name} - {pm25_value:.1f} µg/m³",
             icon=folium.Icon(color=color, icon="cloud")
         ).add_to(m)
 
-    # --------------------------
-    # 3. Bounding Box NASA TEMPO
-    # --------------------------
-    bbox = [
-        [lat - 0.5, lon - 0.5],
-        [lat - 0.5, lon + 0.5],
-        [lat + 0.5, lon + 0.5],
-        [lat + 0.5, lon - 0.5],
-        [lat - 0.5, lon - 0.5]
-    ]
-    folium.PolyLine(
-        locations=bbox,
-        color="blue",
-        weight=2,
-        tooltip="Área cobertura NASA TEMPO (aprox.)"
-    ).add_to(m)
-
-    # --------------------------
-    # 4. Rutas seguras / peligrosas
-    # --------------------------
-    # Simulamos un par de rutas en la ciudad
-    rutas = [
-        [[lat, lon], [lat + 0.02, lon + 0.01], [lat + 0.04, lon + 0.02]],
-        [[lat, lon], [lat - 0.02, lon - 0.01], [lat - 0.04, lon - 0.02]]
-    ]
-
-    ruta_color = get_color_for_value(pm25_display)
-    tooltip_text = "Ruta segura" if ruta_color == "green" else ("Ruta con precauciones" if ruta_color == "orange" else "Ruta peligrosa")
-
-    for ruta in rutas:
-        folium.PolyLine(
-            locations=ruta,
-            color=ruta_color,
-            weight=4,
-            tooltip=tooltip_text
+        # Círculo de influencia visual para cada estación
+        folium.Circle(
+            location=coords,
+            radius=500,
+            color=color,
+            fill=True,
+            fill_color=color,
+            fill_opacity=opacity,
+            tooltip=f"{station_name} (PM2.5: {pm25_value:.1f})"
         ).add_to(m)
 
-    # --------------------------
-    # Mostrar mapa en Streamlit
-    # --------------------------
-    st_folium(m, width=750, height=550)
+    # 3. Círculo del radio de búsqueda general
+    circle_color, opacity = get_color_and_opacity(pm25_display)
+    folium.Circle(
+        location=[lat, lon],
+        radius=radius_input * 1000,
+        color=circle_color,
+        weight=2,
+        fill=True,
+        fill_color=circle_color,
+        fill_opacity=max(0.1, opacity - 0.1), # Hacemos el círculo grande más tenue
+        tooltip=f"Radio de búsqueda: {radius_input} km (PM2.5 promedio: {pm25_display:.1f})"
+    ).add_to(m)
+    
+    st_folium(m, width=750, height=500)
+
+    # --- Footer ---
+    st.divider()
+    footer = f"**Fuente de Datos Principal:** {source}"
+    if st.session_state.alert_ozone:
+        footer += " • **Alerta:** Datos TEMPO simulados para demo"
+    st.caption(footer)
