@@ -5,23 +5,42 @@ from typing import Optional, Tuple, List, Dict
 import requests
 import streamlit as st
 from streamlit_geolocation import streamlit_geolocation
+import folium
+from streamlit_folium import st_folium
+from streamlit_option_menu import option_menu # <-- Importación nueva
 
 # Import WAQI as fallback
-from data_sources.waqi import get_waqi_by_coordinates, get_waqi_stations_nearby
+# Asegúrate de que este archivo exista en tu proyecto: from data_sources.waqi import get_waqi_by_coordinates
 
 # -----------------------------
 # Configuración
 # -----------------------------
-st.set_page_config(page_title="School Air Index", page_icon="🏫", layout="centered")
+st.set_page_config(page_title="School Air Index", page_icon="🏫", layout="wide") # Cambiado a layout="wide"
 st.title("🏫 School Air Index")
 
-# Clave de API para OpenAQ (reemplázala si tienes la tuya)
-OPENAQ_KEY: str = "08f176ffd0ccb07a617b9d9cf0f740366b783adfcef064fcc601a7a636463473"
-OPENAQ_BASE: str = "https://api.openaq.org/v3"
-HEADERS: dict = {"X-API-Key": OPENAQ_KEY} if OPENAQ_KEY else {}
+# -----------------------------
+# BARRA DE NAVEGACIÓN SUPERIOR
+# -----------------------------
+page = option_menu(
+    menu_title=None,
+    options=["Inicio", "Impacto en la Salud", "Guía de Recomendaciones"],
+    icons=["house-heart-fill", "lungs-fill", "clipboard2-check-fill"],  # Iconos de Bootstrap
+    orientation="horizontal",
+    styles={
+        "container": {"padding": "0!important", "background-color": "#fafafa", "border-radius": "8px"},
+        "icon": {"color": "#036A99", "font-size": "22px"},
+        "nav-link": {
+            "font-size": "16px",
+            "text-align": "center",
+            "margin": "0px",
+            "--hover-color": "#eee",
+        },
+        "nav-link-selected": {"background-color": "#009E73"},
+    }
+)
 
 # -----------------------------
-# Estado de la UI
+# Estado de la UI y Helpers (SIN CAMBIOS)
 # -----------------------------
 if "alert_ozone" not in st.session_state:
     st.session_state.alert_ozone = False
@@ -30,463 +49,383 @@ if "search_triggered" not in st.session_state:
 if "coords_to_process" not in st.session_state:
     st.session_state.coords_to_process = None
 
-# -----------------------------
-# Helpers de Procesamiento
-# -----------------------------
+# (Aquí van todas tus funciones helper: iso_label, pm25_to_level, find_locations_by_coordinates, etc.
+#  Las omito aquí por brevedad, pero deben estar en tu script)
+# --- Pega aquí todas tus funciones helper ---
+OPENAQ_KEY: str = "08f176ffd0ccb07a617b9d9cf0f740366b783adfcef064fcc601a7a636463473"
+OPENAQ_BASE: str = "https://api.openaq.org/v3"
+HEADERS: dict = {"X-API-Key": OPENAQ_KEY} if OPENAQ_KEY else {}
 def iso_label(dt_iso: Optional[str]) -> Optional[str]:
-    """Convierte una fecha ISO (UTC) a un formato de hora local legible."""
     if not dt_iso: return None
     try:
-        # Define la zona horaria local (ej: UTC-5 para Ecuador)
         local_tz = timezone(timedelta(hours=-5))
-        # Convierte el string ISO (que está en UTC) a un objeto datetime
         dt_utc = datetime.fromisoformat(dt_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
-        # Convierte de UTC a la zona horaria local
         dt_local = dt_utc.astimezone(local_tz)
-        # Formatea la fecha y hora locales
         return dt_local.strftime("%d/%m/%Y - %I:%M %p")
-    except Exception:
-        # Si algo sale mal, devuelve el string original para no romper la app
-        return dt_iso
-
+    except Exception: return dt_iso
 def pm25_to_level(pm25: float) -> Tuple[str, str]:
-    """Determina el nivel de calidad del aire y la acción recomendada según el PM2.5."""
     if pm25 <= 35.0: return "🟢 Verde (Bueno)", "Actividades normales"
     if pm25 <= 55.0: return "🟡 Amarillo (Moderado)", "Reducir esfuerzo físico"
     return "🔴 Rojo (Insalubre)", "Evitar actividades al aire libre"
-
-def is_data_fresh(dt_iso: Optional[str], max_age_days: int = 7) -> bool:
-    """Verifica si los datos son frescos (no más antiguos que max_age_days días)."""
-    if not dt_iso:
-        return False
-    
-    try:
-        # Convierte el string ISO a datetime
-        dt_utc = datetime.fromisoformat(dt_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
-        now_utc = datetime.now(timezone.utc)
-        age_days = (now_utc - dt_utc).days
-        return age_days <= max_age_days
-    except Exception:
-        return False
-
-def get_pm25_from_waqi(latitude: float, longitude: float) -> Tuple[Optional[float], Optional[str], str]:
-    """Obtiene datos de PM2.5 desde WAQI como fallback."""
-    try:
-        st.info("🔄 Intentando obtener datos desde WAQI como respaldo...")
-        waqi_measurements = get_waqi_by_coordinates(latitude, longitude)
-        
-        if waqi_measurements:
-            # Buscar medición de PM2.5
-            pm25_measurement = None
-            for measurement in waqi_measurements:
-                if measurement.parameter == 'pm25':
-                    pm25_measurement = measurement
-                    break
-            
-            if pm25_measurement:
-                st.success(f"✅ Datos encontrados en WAQI: {pm25_measurement.value:.1f} µg/m³")
-                return (
-                    pm25_measurement.value,
-                    pm25_measurement.date.isoformat(),
-                    f"WAQI • {pm25_measurement.location}"
-                )
-        
-        st.warning("⚠️ WAQI no tiene datos de PM2.5 para esta ubicación.")
-        return None, None, "WAQI sin datos PM2.5"
-        
-    except Exception as e:
-        st.error(f"Error al consultar WAQI: {e}")
-        return None, None, "Error WAQI"
-
-# -----------------------------
-# Helpers de API (Lógica por Coordenadas)
-# -----------------------------
 def _request_openaq(endpoint: str, params: Optional[dict] = None) -> dict:
-    """Función genérica para hacer solicitudes a la API de OpenAQ."""
     url = f"{OPENAQ_BASE}/{endpoint}"
     r = requests.get(url, params=params, headers=HEADERS, timeout=20)
     r.raise_for_status()
     return r.json()
-
 @st.cache_data(ttl=600)
 def find_locations_by_coordinates(latitude: float, longitude: float, radius_km: int) -> List[Dict]:
-    """Paso 1: Encuentra estaciones de monitoreo por coordenadas."""
     st.info(f"Buscando estaciones en un radio de {radius_km} km...")
-    params = {
-        "coordinates": f"{latitude},{longitude}",
-        "radius": radius_km * 1000,
-        "limit": 100,
-    }
+    params = {"coordinates": f"{latitude},{longitude}", "radius": radius_km * 1000, "limit": 100}
     try:
         data = _request_openaq("locations", params=params)
         locations = data.get("results", [])
-        
-        pm25_locations = [
-            loc for loc in locations
-            if any(s.get("parameter", {}).get("name") == "pm25" for s in loc.get("sensors", []))
-        ]
-        
-        # Ordenamos los resultados por distancia en Python
+        pm25_locations = [loc for loc in locations if any(s.get("parameter", {}).get("name") == "pm25" for s in loc.get("sensors", []))]
         sorted_locations = sorted(pm25_locations, key=lambda loc: loc.get('distance', float('inf')))
-
         st.success(f"Se encontraron {len(sorted_locations)} estaciones con sensor PM2.5 cerca.")
         return sorted_locations
-        
     except Exception as e:
         st.error(f"Error al buscar estaciones cercanas: {e}")
         return []
-
 def get_pm25_sensor_id_from_location(location_data: Dict) -> Optional[int]:
-    """Paso 2: Extrae el ID del sensor de PM2.5 de una estación."""
     sensors = location_data.get("sensors", [])
     for sensor in sensors:
         if sensor.get("parameter", {}).get("name") == "pm25":
             return sensor.get("id")
     return None
-
 def get_latest_measurement_from_sensor(sensor_id: int) -> Tuple[Optional[float], Optional[str]]:
-    """
-    Paso 3: Obtiene la última medición de un sensor específico en las últimas 24 horas.
-    Busca datos recientes y devuelve el más actual para evitar problemas de ordenamiento en la API.
-    """
-    # Define el rango de tiempo para la búsqueda (últimas 24 horas)
-    now_utc = datetime.now(timezone.utc)
-    twenty_four_hours_ago = now_utc - timedelta(hours=24)
-
-    params = {
-        "limit": 100,  # Pedimos hasta 100 mediciones en las últimas 24h
-        "page": 1,
-        "datetime_from": twenty_four_hours_ago.isoformat(),
-        "datetime_to": now_utc.isoformat(),
-        "order_by": "datetime", # Mantenemos el orden por si funciona, pero no confiaremos solo en él
-        "sort": "desc"
-    }
-    
+    now_utc, twenty_four_hours_ago = datetime.now(timezone.utc), datetime.now(timezone.utc) - timedelta(hours=24)
+    params = {"limit": 100, "page": 1, "datetime_from": twenty_four_hours_ago.isoformat(), "datetime_to": now_utc.isoformat(), "order_by": "datetime", "sort": "desc"}
     data = _request_openaq(f"sensors/{sensor_id}/measurements", params=params)
     results = data.get("results", [])
-
     if results:
-        # Filtramos mediciones que podrían no tener fecha por alguna razón
         valid_results = [r for r in results if r.get("period", {}).get("datetimeTo", {}).get("utc")]
-        
-        if not valid_results:
-            return None, None
-            
-        # Ordenamos los resultados en Python para GARANTIZAR que obtenemos el más reciente
+        if not valid_results: return None, None
         sorted_results = sorted(valid_results, key=lambda r: r["period"]["datetimeTo"]["utc"], reverse=True)
-        
         latest_measurement = sorted_results[0]
-        value = latest_measurement.get("value")
-        dt = latest_measurement.get("period", {}).get("datetimeTo", {}).get("utc")
-        
-        if value is not None:
-            return float(value), dt
-            
+        value, dt = latest_measurement.get("value"), latest_measurement.get("period", {}).get("datetimeTo", {}).get("utc")
+        if value is not None: return float(value), dt
     return None, None
-
 def get_pm25(latitude: float, longitude: float, radius_km: int) -> Tuple[Optional[float], Optional[str], str]:
-    """
-    Función orquestadora para obtener el dato de PM2.5.
-    Busca en todas las estaciones cercanas y devuelve la medición MÁS RECIENTE de todas ellas.
-    Si no encuentra datos frescos en OpenAQ, usa WAQI como fallback.
-    """
     try:
         candidate_locations = find_locations_by_coordinates(latitude, longitude, radius_km=radius_km)
         if not candidate_locations:
             st.warning("No se encontró ninguna estación de monitoreo con sensores PM2.5 cerca en OpenAQ.")
-            st.info("🔄 Intentando con WAQI como respaldo...")
-            return get_pm25_from_waqi(latitude, longitude)
-
+            return None, None, "No se encontraron estaciones"
         valid_measurements = []
-
         for i, location in enumerate(candidate_locations):
-            loc_name = location.get('name', 'Nombre Desconocido')
-            distance = location.get('distance')
+            loc_name, distance = location.get('name', 'N/A'), location.get('distance')
             dist_label = f"a {distance/1000:.1f} km" if distance is not None else ""
-            
-            st.info(f"Paso #{i+1}: Revisando estación '{loc_name}' {dist_label}...")
-            
+            st.info(f"Paso #{i+1}: Revisando '{loc_name}' {dist_label}...")
             pm25_sensor_id = get_pm25_sensor_id_from_location(location)
-            if not pm25_sensor_id:
-                st.warning(f"La estación '{loc_name}' no tiene sensor PM2.5. Saltando.")
-                continue
-            
+            if not pm25_sensor_id: continue
             v, dt = get_latest_measurement_from_sensor(pm25_sensor_id)
-            if v is not None and dt is not None:
-                # Verificar si los datos son frescos (máximo 7 días)
-                if is_data_fresh(dt, max_age_days=7):
-                    st.write(f"✔️ Dato válido y fresco encontrado en '{loc_name}'.")
-                    valid_measurements.append({
-                        "value": v,
-                        "dt_iso": dt,
-                        "source": f"OpenAQ • {loc_name}"
-                    })
-                else:
-                    st.write(f"⚠️ Datos de '{loc_name}' son muy antiguos (más de 7 días).")
-            else:
-                st.write(f"⚠️ El sensor de '{loc_name}' no reportó datos recientes.")
-
+            if v is not None and dt is not None: valid_measurements.append({"value": v, "dt_iso": dt, "source": f"OpenAQ • {loc_name}"})
         if not valid_measurements:
-            st.warning(f"Se revisaron {len(candidate_locations)} estaciones en OpenAQ, pero ninguna tiene datos de PM2.5 frescos.")
-            st.info("🔄 Intentando con WAQI como respaldo...")
-            return get_pm25_from_waqi(latitude, longitude)
-
-        # Ordenar las mediciones por fecha para encontrar la más reciente
-        most_recent_measurement = sorted(valid_measurements, key=lambda x: x['dt_iso'], reverse=True)[0]
-        
-        st.success(f"✓ Seleccionada la medición más reciente de OpenAQ: '{most_recent_measurement['source']}'")
-        
-        return (
-            most_recent_measurement['value'],
-            most_recent_measurement['dt_iso'],
-            most_recent_measurement['source']
-        )
-
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error al contactar la API de OpenAQ: {e}")
-        st.info("🔄 Intentando con WAQI como respaldo...")
-        return get_pm25_from_waqi(latitude, longitude)
+            st.warning("Ninguna estación cercana reportó datos de PM2.5 frescos.")
+            return None, None, "Estaciones sin datos frescos"
+        most_recent = sorted(valid_measurements, key=lambda x: x['dt_iso'], reverse=True)[0]
+        st.success(f"✓ Usando la medición más reciente de: '{most_recent['source']}'")
+        return (most_recent['value'], most_recent['dt_iso'], most_recent['source'])
     except Exception as e:
         st.error(f"Error inesperado: {e}")
-        st.info("🔄 Intentando con WAQI como respaldo...")
-        return get_pm25_from_waqi(latitude, longitude)
+        return None, None, "Error en la aplicación"
+def get_color_and_opacity(pm25: float) -> Tuple[str, float]:
+    if pm25 <= 35: color, opacity = "green", 0.15 + (pm25 / 35) * 0.45
+    elif pm25 <= 55: color, opacity = "orange", 0.15 + ((pm25 - 35) / 20) * 0.45
+    else: color, opacity = "red", 0.15 + (min(pm25, 150) - 55) / 95 * 0.45
+    return color, opacity
+def get_pm25_for_station(location: Dict) -> Optional[float]:
+    sensor_id = get_pm25_sensor_id_from_location(location)
+    if not sensor_id: return None
+    v, _ = get_latest_measurement_from_sensor(sensor_id)
+    return v
+# --- Fin de las funciones Helper ---
+
 
 # -----------------------------
-# UI de la Barra Lateral
+# UI de la Barra Lateral (CONTENIDO DINÁMICO)
 # -----------------------------
 with st.sidebar:
-    st.subheader("📍 Elige tu Ubicación")
+    st.image("logo.png", use_container_width=True)
+    st.divider()
 
-    # --- Opción 1: Geolocalización Automática ---
-    st.markdown("**Opción A: Usar mi ubicación actual**")
-    location_data = streamlit_geolocation()
-    if st.button("Buscar en mi Ubicación", use_container_width=True, type="primary"):
-        if location_data and location_data.get('latitude'):
+    if page == "Inicio":
+        st.info("ℹ️ Para buscar por tu ubicación actual,realiza click en el icono inferio luego tu navegador te pedirá permiso. Por favor, haz clic en 'Permitir'.")
+        location_data = streamlit_geolocation()
+        if st.button("Buscar en mi Ubicación", use_container_width=True, type="primary"):
+            if location_data and location_data.get('latitude'):
+                st.session_state.search_triggered = True
+                st.session_state.coords_to_process = {"lat": location_data['latitude'], "lon": location_data['longitude']}
+            else:
+                st.error("No se pudo obtener tu ubicación. Asegúrate de dar permisos.")
+        st.markdown("**Opción B: Ingresar coordenadas**")
+        lat_input = st.number_input("Latitud", value=-2.9005, format="%.4f")
+        lon_input = st.number_input("Longitud", value=-79.0045, format="%.4f")
+        if st.button("Buscar por Coordenadas", use_container_width=True):
             st.session_state.search_triggered = True
-            lat = location_data['latitude']
-            lon = location_data['longitude']
-            st.session_state.coords_to_process = {"lat": lat, "lon": lon}
-            st.success(f"Ubicación obtenida: Lat {lat:.4f}, Lon {lon:.4f}")
-        else:
-            st.error("No se pudo obtener tu ubicación. Asegúrate de dar permisos.")
-            st.session_state.search_triggered = False
-
-    # --- Opción 2: Entrada Manual ---
-    st.markdown("**Opción B: Ingresar coordenadas**")
-    # Usamos Ciudad de México como ejemplo por defecto
-    lat_input = st.number_input("Latitud", value=19.4326, format="%.4f", help="Ej: 40.7128 (Nueva York)")
-    lon_input = st.number_input("Longitud", value=-99.1332, format="%.4f", help="Ej: -74.0060 (Nueva York)")
-
-    if st.button("Buscar por Coordenadas", use_container_width=True):
-        st.session_state.search_triggered = True
-        st.session_state.coords_to_process = {"lat": lat_input, "lon": lon_input}
-        st.info(f"Usando coords: Lat {lat_input:.4f}, Lon {lon_input:.4f}")
-    
-    # --- Opciones de Búsqueda ---
-    st.write("---")
-    st.subheader("⚙️ Opciones de Búsqueda")
-    radius_input = st.slider(
-        "Radio de búsqueda (km)",
-        min_value=1,
-        max_value=25,
-        value=15,
-        help="Define qué tan lejos buscar estaciones de monitoreo."
-    )
-
-    # --- Simulación de Alertas ---
-    st.write("---")
-    st.markdown("**Simulación de Alertas**")
-    if st.button("🔴 Activar Alerta Ozono", use_container_width=True): st.session_state.alert_ozone = True
-    if st.button("✅ Desactivar Alerta", use_container_width=True): st.session_state.alert_ozone = False
+            st.session_state.coords_to_process = {"lat": lat_input, "lon": lon_input}
+        st.write("---")
+        st.subheader("⚙️ Opciones de Búsqueda")
+        radius_input = st.slider("Radio de búsqueda (km)", 1, 25, 15)
+        with st.expander("Simulación de Alertas (Demo)"):
+            if st.button("🔴 Activar Alerta Ozono", use_container_width=True): st.session_state.alert_ozone = True
+            if st.button("✅ Desactivar Alerta", use_container_width=True): st.session_state.alert_ozone = False
+    else:
+        st.info("Esta es una herramienta para monitorear la calidad del aire en entornos escolares.")
+        st.success("Selecciona 'Inicio' en la barra superior para realizar una nueva búsqueda.")
 
 # -----------------------------
-# Flujo Principal y UI de Resultado
+# Contenido Principal por Página
 # -----------------------------
-if not st.session_state.search_triggered:
-    st.info("👋 ¡Bienvenido! Usa una de las opciones en la barra lateral para buscar la calidad del aire.")
-else:
-    pm25, dt_iso, source = (None, None, "Sin datos de OpenAQ")
-    
-    if st.session_state.coords_to_process:
-        lat = st.session_state.coords_to_process["lat"]
-        lon = st.session_state.coords_to_process["lon"]
-        pm25, dt_iso, source = get_pm25(lat, lon, radius_input)
-    
-    # Prepara la etiqueta de la fecha/hora para la métrica
-    datetime_for_metric = ""
 
-    if pm25 is not None:
-        pm25_display = pm25
-        # Usa la fecha y hora de la MEDICIÓN, convertida a formato local
-        datetime_for_metric = iso_label(dt_iso)
-    else:
-        st.warning("No se pudo obtener un valor real de PM2.5. Usando valor simulado (42 µg/m³).")
-        pm25_display = 42.0
-        source = "Valor simulado"
-        # Para el valor simulado, usa la HORA ACTUAL
-        local_tz = timezone(timedelta(hours=-5))
-        now_local = datetime.now(local_tz)
-        datetime_for_metric = now_local.strftime("%d/%m/%Y - %I:%M %p")
+# -----------------------------
+# Contenido Principal por Página
+# -----------------------------
 
-    nivel, accion = pm25_to_level(pm25_display)
-    if st.session_state.alert_ozone:
-        nivel = "🔴 Rojo (TEMPO Ozono)"; accion = "Ozono elevado: Evitar actividades al aire libre"
-        st.info("🚨 **Alerta de Ozono (TEMPO) activa.**")
+# --- PÁGINA 1: INICIO ---
+if page == "Inicio":
+    if not st.session_state.search_triggered:
+        # --- PANTALLA DE BIENVENIDA MEJORADA CON GUÍA DE PASOS ---
+        st.markdown("### ¡Hola, docente! 🍎")
+        st.markdown(
+            "Bienvenido/a al **School Air Index**. Esta herramienta te ayuda a tomar decisiones informadas sobre las "
+            "actividades al aire libre para proteger la salud de tus estudiantes."
+        )
+        st.info("#### Sigue estos sencillos pasos para empezar:")
 
-    # Se modifica el label de la métrica para usar la fecha/hora correspondiente
-    st.metric(f"PM2.5 (µg/m³) - {datetime_for_metric}", f"{pm25_display:.1f}", help="Partículas Finas (≤ 2.5µm).")
-    
-    st.subheader(f"Índice de Calidad del Aire: {nivel}")
-    if "Verde" in nivel: st.success(f"**Acción:** {accion}")
-    elif "Amarillo" in nivel: st.warning(f"**Acción:** {accion}")
-    else: st.error(f"**Acción:** {accion}")
+        # Usamos columnas para presentar la guía de forma clara
+        col1, col2 = st.columns([0.5, 0.5], gap="large")
 
-    st.write("### Recomendaciones Deportivas")
-    c1, c2, c3 = st.columns(3)
-    def colorize_sport(label: str, level: str) -> str:
-        if "Verde" in nivel: return f"🟢 **{label}** — OK"
-        if "Amarillo" in nivel: return f"🟡 **{label}** — Precauciones"
-        return f"🔴 **{label}** — No recomendado"
-    with c1: st.markdown(colorize_sport("⚽ Fútbol", nivel))
-    with c2: st.markdown(colorize_sport("🏃 Atletismo", nivel))
-    with c3: st.markdown(colorize_sport("🤸 Recreación", nivel))
-
-    footer = f"**Fuente PM2.5:** {source}"
-    # Si no es simulado, muestra la fecha de la última actualización
-    if "simulado" not in source and datetime_for_metric:
-        footer += f" • **Última Actualización:** {datetime_for_metric}"
-    if st.session_state.alert_ozone:
-        footer += " • **Alerta:** Datos TEMPO simulados para demo"
-    st.caption(footer)
-
-    import folium
-    from streamlit_folium import st_folium
-
-    st.subheader("🗺️ Mapa combinado - Estaciones, Cobertura TEMPO y Rutas")
-
-    def get_color_for_value(val: float) -> str:
-        """Devuelve color tipo semáforo para PM2.5"""
-        if val <= 35:
-            return "green"
-        elif val <= 55:
-            return "orange"
-        return "red"
-
-    # Crear mapa centrado en la ubicación del usuario
-    m = folium.Map(location=[lat, lon], zoom_start=11)
-
-    # --------------------------
-    # 1. Ubicación del usuario
-    # --------------------------
-    folium.Marker(
-        [lat, lon],
-        popup="📍 Tú estás aquí",
-        tooltip="Tu ubicación",
-        icon=folium.Icon(color="blue", icon="user")
-    ).add_to(m)
-
-    # --------------------------
-    # 2. Estaciones OpenAQ
-    # --------------------------
-    candidate_locations = find_locations_by_coordinates(lat, lon, radius_km=radius_input)
-
-    if not candidate_locations:
-        st.info(f"No hay estaciones OpenAQ dentro de {radius_input} km.")
-    else:
-        for loc in candidate_locations:
-            coords = loc["coordinates"].get("latitude"), loc["coordinates"].get("longitude")
-            if None in coords:
-                continue
-            station_name = loc.get("name", "Estación sin nombre")
+        with col1:
+            st.subheader("Paso 1: Elige tu Ubicación 📍")
+            st.markdown("""
+            Usa el **panel de la izquierda** para indicarnos dónde te encuentras. Tienes dos opciones:
             
-            pm25_value = get_pm25_for_station(loc)
-            if pm25_value is None:
-                continue  # saltar si no hay datos
-
-            color, opacity = get_color_and_opacity(pm25_value)
-
-            # Marcador con icono nube
-            folium.Marker(
-                coords,
-                popup=f"{station_name}<br>PM2.5: {pm25_value:.1f} µg/m³",
-                tooltip=f"{station_name} - {pm25_value:.1f} µg/m³",
-                icon=folium.Icon(color=color, icon="cloud")
-            ).add_to(m)
-
-    # --------------------------
-    # 2b. Estaciones WAQI (fallback) limitadas por radio
-    # --------------------------
-    try:
-        waqi_stations = get_waqi_stations_nearby(lat, lon, radius=radius_input)
-    except Exception:
-        waqi_stations = []
-
-    if not waqi_stations:
-        st.info(f"No hay estaciones WAQI dentro de {radius_input} km.")
-    else:
-        for stn in waqi_stations:
-            stn_lat = stn.get("latitude")
-            stn_lon = stn.get("longitude")
-            if stn_lat is None or stn_lon is None:
-                continue
-            station_name = stn.get("name", "WAQI Station")
-            folium.Marker(
-                [stn_lat, stn_lon],
-                popup=f"WAQI: {station_name}",
-                tooltip=f"WAQI • {station_name}",
-                icon=folium.Icon(color="purple", icon="cloud")
-            ).add_to(m)
-
-    # Círculo de influencia alrededor de la estación
-    folium.Circle(
-        location=coords,
-        radius=500,  # 500m de influencia visual
-        color=color,
-        fill=True,
-        fill_color=color,
-        fill_opacity=opacity,
-        tooltip=f"{station_name} (PM2.5: {pm25_value:.1f})"
-    ).add_to(m)
+            - **A) Usar mi Ubicación Actual:**
+              - Haz clic en el botón **"Buscar en mi Ubicación"**.
+              - Tu navegador te pedirá permiso para acceder a tu ubicación. **¡Es crucial que hagas clic en 'Permitir'!**
+            
+            - **B) Ingresar Coordenadas:**
+              - Escribe la latitud y longitud manualmente si las conoces y haz clic en "Buscar por Coordenadas".
+            """)
+            st.image("https://media.istockphoto.com/id/586087898/es/vector/icono-de-destino-signo-de-punter%C3%ADa-en-el-punto-de-mira.jpg?s=170667a&w=0&k=20&c=oOWMBKL5gKBSHv7pHpZHgfeqen4zt0W99_O1M8YyhSc=", caption="Asegúrate de permitir el acceso a tu ubicación en el navegador.")
 
 
-    # --------------------------
-    # 3. Bounding Box NASA TEMPO
-    # --------------------------
-    bbox = [
-        [lat - 0.5, lon - 0.5],
-        [lat - 0.5, lon + 0.5],
-        [lat + 0.5, lon + 0.5],
-        [lat + 0.5, lon - 0.5],
-        [lat - 0.5, lon - 0.5]
-    ]
-    folium.PolyLine(
-        locations=bbox,
-        color="blue",
-        weight=2,
-        tooltip="Área cobertura NASA TEMPO (aprox.)"
-    ).add_to(m)
+        with col2:
+            st.subheader("Paso 2: Analiza el Informe 📊")
+            st.markdown("""
+            Una vez que busques, en esta pantalla principal aparecerá un informe completo con:
+            - Un **resumen claro** del nivel de partículas finas (PM2.5).
+            - Un **código de colores** tipo semáforo (🟢, 🟡, 🔴) fácil de entender.
+            - **Recomendaciones rápidas** para las actividades escolares del día.
+            - Un **mapa interactivo** con tu ubicación y las estaciones de monitoreo cercanas.
+            """)
+            
+            st.subheader("Paso 3: Profundiza tu Conocimiento 📚")
+            st.markdown("""
+            ¡No te detengas en el resumen! Usa la **barra de navegación superior** para explorar las otras secciones:
+            - **Impacto en la Salud:** Entiende la evidencia científica detrás de los riesgos.
+            - **Guía de Recomendaciones:** Encuentra un plan de acción detallado para cada nivel de alerta.
+            """)
+        
+        st.success("**¡Listo! Ya puedes usar el panel de la izquierda para comenzar tu primera búsqueda.**")
 
-    # --------------------------
-    # 4. Rutas seguras / peligrosas
-    # --------------------------
-    # Simulamos un par de rutas en la ciudad
-    rutas = [
-        [[lat, lon], [lat + 0.02, lon + 0.01], [lat + 0.04, lon + 0.02]],
-        [[lat, lon], [lat - 0.02, lon - 0.01], [lat - 0.04, lon - 0.02]]
-    ]
 
-    ruta_color = get_color_for_value(pm25_display)
-    tooltip_text = "Ruta segura" if ruta_color == "green" else ("Ruta con precauciones" if ruta_color == "orange" else "Ruta peligrosa")
+    else: # Esta es la pantalla de resultados que ya tenías
+        col1, col2 = st.columns([0.5, 0.5], gap="large")
+        with col1:
+            pm25, dt_iso, source = (None, None, "Sin datos")
+            with st.spinner("Buscando datos..."):
+                if st.session_state.coords_to_process:
+                    # Asegúrate de que radius_input esté definido. Si no, dale un valor por defecto.
+                    if 'radius_input' not in locals():
+                        radius_input = 15 # Valor por defecto si no está definido
+                    lat, lon = st.session_state.coords_to_process["lat"], st.session_state.coords_to_process["lon"]
+                    with st.expander("Ver proceso de búsqueda detallado..."):
+                        pm25, dt_iso, source = get_pm25(lat, lon, radius_input)
+            
+            if pm25 is not None:
+                pm25_display, datetime_for_metric = pm25, iso_label(dt_iso)
+            else:
+                st.warning("No se encontraron datos reales. Mostrando un valor de ejemplo.")
+                pm25_display, source = 42.0, "Valor simulado"
+                datetime_for_metric = datetime.now(timezone(timedelta(hours=-5))).strftime("%d/%m/%Y - %I:%M %p")
 
-    for ruta in rutas:
-        folium.PolyLine(
-            locations=ruta,
-            color=ruta_color,
-            weight=4,
-            tooltip=tooltip_text
-        ).add_to(m)
+            nivel, accion = pm25_to_level(pm25_display)
+            if st.session_state.alert_ozone:
+                nivel, accion = "🔴 Rojo (TEMPO Ozono)", "Ozono elevado: Evitar actividades al aire libre"
+            
+            st.subheader("Resumen 🌬️")
+            with st.container(border=True):
+                c1, c2 = st.columns(2)
+                with c1: st.metric(f"PM2.5 (µg/m³)", f"{pm25_display:.1f}")
+                with c2: st.caption(f"Última Medición:{datetime_for_metric}")
+                st.subheader(f"Nivel: {nivel}")
+                if "Verde" in nivel: st.success(f"**Recomendación:** {accion}")
+                elif "Amarillo" in nivel: st.warning(f"**Recomendación:** {accion}")
+                else: st.error(f"**Recomendación:** {accion}")
+            
+            st.subheader("Recomendaciones 🏫")
+            with st.expander("🟢 **Nivel Bueno**", expanded="Verde" in nivel): st.markdown("- **Actividades:** ¡Adelante! Disfruten del patio.\n- **Ventilación:** Abrir ventanas.")
+            with st.expander("🟡 **Nivel Moderado**", expanded="Amarillo" in nivel): st.markdown("- **Actividades:** Reducir intensidad.\n- **Grupos sensibles:** Cuidado extra.")
+            with st.expander("🔴 **Nivel Insalubre**", expanded="Rojo" in nivel): st.markdown("- **Actividades:** **Evitar** el aire libre.\n- **Ventilación:** **Cerrar** ventanas.")
 
-    # --------------------------
-    # Mostrar mapa en Streamlit
-    # --------------------------
-    st_folium(m, width=750, height=550)
+        with col2:
+            st.subheader("🗺️ Mapa de Monitoreo")
+            # Asegúrate de que lat y lon estén definidos antes de usarlos
+            if st.session_state.coords_to_process:
+                lat = st.session_state.coords_to_process["lat"]
+                lon = st.session_state.coords_to_process["lon"]
+                if 'radius_input' not in locals():
+                        radius_input = 15 # Valor por defecto
+
+                m = folium.Map(location=[lat, lon], zoom_start=11)
+                folium.Marker([lat, lon], popup="📍 Escuela", icon=folium.Icon(color="blue", icon="school", prefix="fa")).add_to(m)
+                
+                # Usamos una variable local para no volver a llamar a la API si no es necesario
+                candidate_locations = find_locations_by_coordinates(lat, lon, radius_input)
+                for loc in candidate_locations:
+                    coords = loc["coordinates"]["latitude"], loc["coordinates"]["longitude"]
+                    pm25_value = get_pm25_for_station(loc)
+                    if pm25_value is None: continue
+                    color, _ = get_color_and_opacity(pm25_value)
+                    folium.Marker(coords, popup=f"{loc.get('name', 'N/A')}<br>PM2.5: {pm25_value:.1f}", icon=folium.Icon(color=color, icon="cloud")).add_to(m)
+                
+                st_folium(m, width=None, height=450, returned_objects=[])
+                st.caption(f"**Fuente de Datos Principal:** {source}")
+# --- PÁGINA 2: IMPACTO EN LA SALUD (VERSIÓN MEJORADA CON FUENTES) ---
+elif page == "Impacto en la Salud":
+    st.header("Impacto de la Calidad del Aire en la Salud Infantil 🩺")
+    st.markdown("---")
+    st.markdown("""
+    Los niños son **biológicamente más vulnerables** a los efectos nocivos de la contaminación del aire. Sus cuerpos y defensas aún están en desarrollo, lo que los pone en un riesgo significativamente mayor que a los adultos. Las razones clave, respaldadas por la comunidad científica, son:
+    - **Pulmones en Desarrollo:** Sus pulmones continúan creciendo hasta la adolescencia. El daño infligido por los contaminantes a esta edad puede ser permanente y reducir su función pulmonar de por vida.
+    - **Frecuencia Respiratoria:** Los niños respiran más rápido, inhalando un mayor volumen de aire (y de contaminantes) por kilogramo de peso corporal.
+    - **Sistema Inmune Inmaduro:** Su sistema de defensas no está completamente desarrollado, haciéndolos más susceptibles a infecciones respiratorias agravadas por la polución.
+    """)
+    
+    col1, col2 = st.columns([0.6, 0.4], gap="large")
+
+    with col1:
+        st.subheader("Principales Efectos en la Salud (Basado en Evidencia)")
+
+        st.error("#### 🫁 Sistema Respiratorio")
+        st.markdown("""
+        Es el más afectado de forma inmediata. La exposición a partículas finas (PM2.5) está directamente asociada con:
+        - El **aumento en la frecuencia y severidad de los ataques de asma**.
+        - Un mayor riesgo de desarrollar infecciones respiratorias agudas como **neumonía y bronquitis**.
+        - Una **reducción medible en el crecimiento y la función pulmonar**, un efecto que puede persistir hasta la edad adulta.
+        
+        *Fuente: [Organización Mundial de la Salud (OMS)](https://www.who.int/es/news-room/fact-sheets/detail/ambient-(outdoor)-air-quality-and-health)*
+        """)
+
+        st.warning("#### 🧠 Desarrollo Neurológico y Cognitivo")
+        st.markdown("""
+        La evidencia científica, destacada por investigadores como la **Dra. Lilian Calderón (UVM)**, es alarmante. Las partículas ultrafinas (UFP), generadas por la combustión, pueden cruzar la barrera hematoencefálica y causar **neuroinflamación**, afectando directamente el desarrollo cerebral.
+
+        En jóvenes de ciudades con alta contaminación, se ha documentado una conexión directa con:
+
+        - **Déficits cognitivos** que impactan el aprendizaje, la memoria y la atención.
+        - **Alteraciones del equilibrio, la marcha, el olfato y trastornos del sueño.**
+        - La aparición de marcadores biológicos tempranos asociados a enfermedades neurodegenerativas como el **Alzheimer y el Parkinson**.
+
+        Los investigadores concluyen que la prevención es fundamental, ya que una baja exposición a la contaminación durante la infancia y la adolescencia es clave para evitar que estas enfermedades evolucionen.
+
+        *Fuente: [Artículo sobre partículas ultrafinas de Laureate Comunicación](https://laureate-comunicacion.com/prensa/particulas-ultrafinas-que-son-y-por-que-deben-preocuparnos/), basado en la investigación de la Dra. Lilian Calderón y Alberto Ayala.*
+        """)
+        
+        st.info("#### ❤️ Riesgos a Largo Plazo")
+        st.markdown("""
+        La exposición a la contaminación del aire durante los años críticos de la infancia, e incluso desde la etapa prenatal, no solo afecta la salud inmediata, sino que también sienta las bases para enfermedades futuras. Esto incluye un **mayor riesgo de desarrollar enfermedades cardiovasculares y respiratorias crónicas** en la edad adulta, así como un desarrollo pulmonar reducido.
+
+        *Fuente: [Agencia Europea de Medio Ambiente](https://www.eea.europa.eu/publications/air-pollution-and-childrens-health)*
+        """)
+    
+    with col2:
+        st.image(
+            "https://dkv.es/corporativo/sites/default/files/2022-04/Contaminaci%C3%B3n%20salud%20infantil%20%282%29.jpg",
+            caption="Infografía educativa sobre la relación entre la contaminación ambiental y la salud infantil, destacando los riesgos asociados a la exposición a partículas finas (PM2.5)."
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.success("""
+        **¿Por qué es crucial en las escuelas?**
+        
+        Dado que los niños pasan una parte significativa de su día en la escuela, garantizar un aire más limpio en este entorno es una de las intervenciones de salud pública más efectivas para proteger su futuro.
+        """)
+# --- PÁGINA 3: GUÍA DE RECOMENDACIONES (VERSIÓN MEJORADA) ---
+elif page == "Guía de Recomendaciones":
+    st.header("Guía Detallada de Actividades Escolares ✅")
+    st.markdown("---")
+    st.info("Usa este plan de acción para tomar decisiones informadas sobre las actividades de los estudiantes según el nivel de calidad del aire.")
+
+    # --- NIVEL BUENO ---
+    st.subheader("🟢 Nivel Bueno")
+    with st.container(border=True):
+        st.markdown("#### Mensaje Clave: ¡Luz verde! Es un día excelente para aprender y jugar al aire libre.")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("""
+            ##### **⚽ En el Patio y Deporte**
+            - ✅ **Educación Física:** Realizar sin restricciones.
+            - ✅ **Recreo:** Disfrutar del tiempo completo en exteriores.
+            - ✅ **Deportes:** Entrenamientos y competiciones pueden proceder normalmente.
+            """)
+        with c2:
+            st.markdown("""
+            ##### **🏫 En el Aula**
+            - ✅ **Ventilación:** Mantener las ventanas abiertas para una buena circulación de aire.
+            - ✅ **Actividades:** Considerar realizar clases como lectura o arte al aire libre.
+            """)
+        with c3:
+            st.markdown("""
+            ##### **🩺 Grupos Sensibles**
+            - ✅ **Niños con asma:** Generalmente no requieren precauciones especiales, pero la vigilancia es siempre una buena práctica.
+            """)
+
+    # --- NIVEL MODERADO ---
+    st.subheader("🟡 Nivel Moderado")
+    with st.container(border=True):
+        st.markdown("#### Mensaje Clave: Precaución. Se recomienda reducir la intensidad y duración del esfuerzo físico.")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("""
+            ##### **⚽ En el Patio y Deporte**
+            - 🟡 **Educación Física:** Modificar actividades para reducir el esfuerzo prolongado. Favorecer ejercicios de habilidad sobre los de resistencia.
+            - 🟡 **Recreo:** Aceptable, pero considerar acortarlo y vigilar a los estudiantes más activos.
+            - 🟡 **Deportes:** Reducir la duración de entrenamientos intensos y programar más descansos.
+            """)
+        with c2:
+            st.markdown("""
+            ##### **🏫 En el Aula**
+            - 🟡 **Ventilación:** Ventilar de forma intermitente. Cerrar ventanas si se percibe bruma o malos olores.
+            - 🟡 **Actividades:** Realizar las clases que requieran más esfuerzo físico en interiores.
+            """)
+        with c3:
+            st.markdown("""
+            ##### **🩺 Grupos Sensibles**
+            - ⚠️ **Niños con asma:** Deben **evitar el esfuerzo físico intenso**. Pueden participar en actividades más tranquilas. Asegurarse de que tengan sus inhaladores a mano.
+            """)
+
+    # --- NIVEL INSALUBRE ---
+    st.subheader("🔴 Nivel Insalubre")
+    with st.container(border=True):
+        st.markdown("#### Mensaje Clave: ¡Alerta! La salud es la prioridad. Todas las actividades deben realizarse en interiores.")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("""
+            ##### **⚽ En el Patio y Deporte**
+            - ❌ **Educación Física:** **CANCELAR** todas las actividades al aire libre. Mover a un gimnasio o aula.
+            - ❌ **Recreo:** Realizar el recreo **dentro del aula** o en espacios interiores designados.
+            - ❌ **Deportes:** **SUSPENDER** todos los entrenamientos y competiciones al aire libre.
+            """)
+        with c2:
+            st.markdown("""
+            ##### **🏫 En el Aula**
+            - ❌ **Ventilación:** **Mantener todas las ventanas y puertas cerradas.**
+            - ❌ **Actividades:** Planificar "pausas activas" (estiramientos, yoga suave) dentro del aula para que los niños se muevan de forma segura.
+            """)
+        with c3:
+            st.markdown("""
+            ##### **🩺 Grupos Sensibles**
+            - 🛑 **TODOS los niños** se consideran sensibles en este nivel. Es crucial monitorear cualquier síntoma como tos o dificultad para respirar. Los niños con condiciones preexistentes están en riesgo elevado.
+            """)
