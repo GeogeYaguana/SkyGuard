@@ -125,6 +125,36 @@ def send_bulk_whatsapp(body: str, *, use_content_template: bool = True) -> int:
         if ok:
             success_count += 1
     return success_count
+from typing import Optional, Tuple
+import requests
+
+@st.cache_data(ttl=3600) # Cache results for an hour to avoid repeated API calls
+def get_coords_from_city(city_name: str) -> Optional[Tuple[float, float]]:
+    """
+    Usa la API de Nominatim (OpenStreetMap) para obtener las coordenadas de una ciudad.
+    """
+    try:
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {'q': city_name, 'format': 'json', 'limit': 1}
+        # Es buena práctica enviar un User-Agent que identifique tu aplicación
+        headers = {'User-Agent': 'SchoolAirIndexApp/1.0 (your-email@example.com)'}
+        
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response.raise_for_status() # Lanza un error si la petición falla
+        results = response.json()
+        
+        if results:
+            lat = float(results[0]["lat"])
+            lon = float(results[0]["lon"])
+            return lat, lon
+        else:
+            return None
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error de red al buscar la ciudad: {e}")
+        return None
+    except Exception as e:
+        st.error(f"Ocurrió un error inesperado al geocodificar: {e}")
+        return None
 def iso_label(dt_iso: Optional[str]) -> Optional[str]:
     if not dt_iso: return None
     try:
@@ -153,7 +183,7 @@ def find_locations_by_coordinates(latitude: float, longitude: float, radius_km: 
         locations = data.get("results", [])
         pm25_locations = [loc for loc in locations if any(s.get("parameter", {}).get("name") == "pm25" for s in loc.get("sensors", []))]
         sorted_locations = sorted(pm25_locations, key=lambda loc: loc.get('distance', float('inf')))
-        msg_ok = f"Se encontraron {len(sorted_locations)} estaciones con sensor PM2.5 cerca."
+        msg_ok = f"Se encontraron {len(sorted_locations)} estaciones con sensor PM2.5 (Calidad del aire) cerca."
         st.session_state.last_search_log.append({"level": "success", "text": msg_ok})
         st.success(msg_ok)
         return sorted_locations
@@ -261,12 +291,25 @@ with st.sidebar:
                 st.session_state.coords_to_process = {"lat": location_data['latitude'], "lon": location_data['longitude']}
             else:
                 st.error("No se pudo obtener tu ubicación. Asegúrate de dar permisos.")
-        st.markdown("**Opción B: Ingresar coordenadas**")
-        lat_input = st.number_input("Latitud", value=-2.9005, format="%.4f")
-        lon_input = st.number_input("Longitud", value=-79.0045, format="%.4f")
-        if st.button("Buscar por Coordenadas", use_container_width=True):
-            st.session_state.search_triggered = True
-            st.session_state.coords_to_process = {"lat": lat_input, "lon": lon_input}
+        st.markdown("**Opción B: Buscar por Sector**")
+        city_input = st.text_input("Ingresa un sector,ciudad y el pais de la ciudad(ej: 'Tarqui,Guayaquil,Ecuador')")
+
+        if st.button("Buscar por Ciudad", use_container_width=True):
+            if city_input:
+                # Llama a la nueva función que definimos antes
+                coords = get_coords_from_city(city_input)
+                if coords:
+                    lat, lon = coords
+                    st.success(f"📍 Ciudad encontrada. Usando coordenadas: {lat:.4f}, {lon:.4f}")
+                    
+                    # Actualiza el estado de la sesión para iniciar la búsqueda
+                    st.session_state.search_triggered = True
+                    st.session_state.coords_to_process = {"lat": lat, "lon": lon}
+                else:
+                    st.error("No se pudo encontrar la ciudad. Intenta ser más específico (ej: 'Ciudad, País').")
+            else:
+                st.warning("Por favor, ingresa el nombre de una ciudad para buscar.")
+        # --- FIN DE LA NUEVA SECCIÓN ---
         st.write("---")
         st.subheader("⚙️ Opciones de Búsqueda")
         radius_input = st.slider("Radio de búsqueda (km)", 1, 25, 15)
@@ -329,14 +372,9 @@ if page == "Inicio":
             st.markdown("---")
 
             # Opción B
-            st.markdown("##### B) Ingresar Coordenadas ✍️")
-            st.markdown("Escribe la latitud y longitud manualmente y luego presiona el botón **'Buscar por Coordenadas'**.")
+            st.markdown("##### B) Ingresar por Sector✍️")
+            st.markdown('Escriba en el siguiente formato "sector,ciudad,pais" y haga click en buscar por sector ')
             
-            # --- CALLOUT AÑADIDO ---
-            st.info("""
-            **⚙️ Personaliza tu Búsqueda:** No olvides que también puedes ajustar el **radio de búsqueda** usando el deslizador en el panel de la izquierda para definir qué tan lejos buscar estaciones.
-            """)
-            # --- FIN DEL CALLOUT ---
 
         with col2:
             st.subheader("Paso 2: Analiza el Informe 📊")
@@ -353,6 +391,14 @@ if page == "Inicio":
             - **Guía de Recomendaciones:** Encuentra un plan de acción detallado para cada nivel.
             """)
         st.success("**¡Listo! Ya puedes usar el panel de la izquierda para comenzar tu primera búsqueda.**")
+        # --- CALLOUT AÑADIDO ---
+        st.info("""
+        **⚙️ Personaliza tu Búsqueda:** No olvides que también puedes ajustar el **radio de búsqueda** usando el deslizador en el panel de la izquierda para definir qué tan lejos buscar estaciones.
+        """)
+        st.info("""
+        **⚙️ Sistema de alarma:**  Cuando detecta que el nivel de calidad del aire esta en rojo envia un mensaje por whasatapp advirtiendo al cuerpo docente, tambien se pueden realizar simulacro empleando el boton simulacion de alertas.
+        """)
+        # --- FIN DEL CALLOUT ---
 
     else:
         # --- PANTALLA DE RESULTADOS (SIN CAMBIOS) ---
