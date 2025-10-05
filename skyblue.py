@@ -78,6 +78,7 @@ TWILIO_CONTENT_VARIABLES = os.getenv("TWILIO_CONTENT_VARIABLES", '{"1":"12/1","2
 # Lista de destinatarios de WhatsApp (quemados). Reemplaza con tus números.
 TWILIO_WHATSAPP_RECIPIENTS: List[str] = [
     "whatsapp:+593995532793",
+    "whatsapp:+593939972193",
 ]
 
 def send_whatsapp_message(body: str, to_number: str, from_number: str, *, content_sid: Optional[str] = None, content_variables_json: Optional[str] = None) -> bool:
