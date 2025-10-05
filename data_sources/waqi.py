@@ -184,19 +184,14 @@ def get_waqi_by_coordinates(latitude: float, longitude: float) -> List[WAQIMeasu
                         if param in param_mapping:
                             param_name, unit = param_mapping[param]
                             
-                            # Prefer station coordinates reported by WAQI city.geo when available
-                            city_geo = aqi_data.get('city', {}).get('geo', [latitude, longitude])
-                            station_lat = city_geo[0] if isinstance(city_geo, (list, tuple)) and len(city_geo) == 2 else latitude
-                            station_lon = city_geo[1] if isinstance(city_geo, (list, tuple)) and len(city_geo) == 2 else longitude
-
                             measurement = WAQIMeasurement(
                                 location=aqi_data.get('city', {}).get('name', f"Location {latitude}, {longitude}"),
                                 parameter=param_name,
                                 value=value,
                                 unit=unit,
                                 date=datetime.fromisoformat(aqi_data.get('time', {}).get('iso', '').replace('Z', '+00:00')),
-                                latitude=station_lat,
-                                longitude=station_lon,
+                                latitude=latitude,
+                                longitude=longitude,
                                 country=aqi_data.get('city', {}).get('name', '').split(',')[-1].strip() if ',' in aqi_data.get('city', {}).get('name', '') else '',
                                 city=aqi_data.get('city', {}).get('name', ''),
                                 source_name='WAQI',
@@ -211,20 +206,6 @@ def get_waqi_by_coordinates(latitude: float, longitude: float) -> List[WAQIMeasu
     except Exception as e:
         logger.error(f"Error fetching WAQI data for coordinates {latitude}, {longitude}: {e}")
         return []
-
-def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculate distance in km between two points using the Haversine formula."""
-    R = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(math.radians(lat1))
-        * math.cos(math.radians(lat2))
-        * math.sin(dlon / 2) ** 2
-    )
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
 
 def get_waqi_stations_nearby(latitude: float, longitude: float, radius: float = 10.0) -> List[Dict]:
     """
@@ -248,15 +229,27 @@ def get_waqi_stations_nearby(latitude: float, longitude: float, radius: float = 
         if data.get('status') == 'ok' and data.get('data'):
             aqi_data = data['data']
 
-            # Use station coordinates returned by WAQI when available
-            city_geo = aqi_data.get('city', {}).get('geo', [latitude, longitude])
-            station_lat = city_geo[0] if isinstance(city_geo, (list, tuple)) and len(city_geo) == 2 else latitude
-            station_lon = city_geo[1] if isinstance(city_geo, (list, tuple)) and len(city_geo) == 2 else longitude
+            # Try to use station coordinates provided by WAQI, do NOT use user coordinates
+            city_geo = aqi_data.get('city', {}).get('geo') or []
+            if isinstance(city_geo, list) and len(city_geo) >= 2:
+                station_lat, station_lon = float(city_geo[0]), float(city_geo[1])
+            else:
+                # Fallback to user-provided coords only if WAQI response lacks geo
+                station_lat, station_lon = float(latitude), float(longitude)
 
-            distance_km = _haversine_km(latitude, longitude, station_lat, station_lon)
+            # Haversine distance between user location and station
+            def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+                R = 6371.0
+                dlat = math.radians(lat2 - lat1)
+                dlon = math.radians(lon2 - lon1)
+                a = math.sin(dlat/2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2) ** 2
+                c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+                return R * c
 
-            # Respect user radius; return empty if outside
-            if distance_km > radius:
+            distance_km = haversine_km(latitude, longitude, station_lat, station_lon)
+
+            # Respect search radius; return empty if outside
+            if radius is not None and distance_km > float(radius):
                 return []
 
             station_info = {
@@ -271,7 +264,7 @@ def get_waqi_stations_nearby(latitude: float, longitude: float, radius: float = 
                 'dominant_pollutant': aqi_data.get('dominentpol', 'Unknown'),
                 'last_update': aqi_data.get('time', {}).get('iso', 'Unknown')
             }
-
+            
             return [station_info]
         
         return []
