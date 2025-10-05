@@ -6,6 +6,9 @@ import requests
 import streamlit as st
 from streamlit_geolocation import streamlit_geolocation
 
+# Import WAQI as fallback
+from data_sources.waqi import get_waqi_by_coordinates
+
 # -----------------------------
 # Configuración
 # -----------------------------
@@ -51,6 +54,49 @@ def pm25_to_level(pm25: float) -> Tuple[str, str]:
     if pm25 <= 35.0: return "🟢 Verde (Bueno)", "Actividades normales"
     if pm25 <= 55.0: return "🟡 Amarillo (Moderado)", "Reducir esfuerzo físico"
     return "🔴 Rojo (Insalubre)", "Evitar actividades al aire libre"
+
+def is_data_fresh(dt_iso: Optional[str], max_age_days: int = 7) -> bool:
+    """Verifica si los datos son frescos (no más antiguos que max_age_days días)."""
+    if not dt_iso:
+        return False
+    
+    try:
+        # Convierte el string ISO a datetime
+        dt_utc = datetime.fromisoformat(dt_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
+        now_utc = datetime.now(timezone.utc)
+        age_days = (now_utc - dt_utc).days
+        return age_days <= max_age_days
+    except Exception:
+        return False
+
+def get_pm25_from_waqi(latitude: float, longitude: float) -> Tuple[Optional[float], Optional[str], str]:
+    """Obtiene datos de PM2.5 desde WAQI como fallback."""
+    try:
+        st.info("🔄 Intentando obtener datos desde WAQI como respaldo...")
+        waqi_measurements = get_waqi_by_coordinates(latitude, longitude)
+        
+        if waqi_measurements:
+            # Buscar medición de PM2.5
+            pm25_measurement = None
+            for measurement in waqi_measurements:
+                if measurement.parameter == 'pm25':
+                    pm25_measurement = measurement
+                    break
+            
+            if pm25_measurement:
+                st.success(f"✅ Datos encontrados en WAQI: {pm25_measurement.value:.1f} µg/m³")
+                return (
+                    pm25_measurement.value,
+                    pm25_measurement.date.isoformat(),
+                    f"WAQI • {pm25_measurement.location}"
+                )
+        
+        st.warning("⚠️ WAQI no tiene datos de PM2.5 para esta ubicación.")
+        return None, None, "WAQI sin datos PM2.5"
+        
+    except Exception as e:
+        st.error(f"Error al consultar WAQI: {e}")
+        return None, None, "Error WAQI"
 
 # -----------------------------
 # Helpers de API (Lógica por Coordenadas)
@@ -142,12 +188,14 @@ def get_pm25(latitude: float, longitude: float, radius_km: int) -> Tuple[Optiona
     """
     Función orquestadora para obtener el dato de PM2.5.
     Busca en todas las estaciones cercanas y devuelve la medición MÁS RECIENTE de todas ellas.
+    Si no encuentra datos frescos en OpenAQ, usa WAQI como fallback.
     """
     try:
         candidate_locations = find_locations_by_coordinates(latitude, longitude, radius_km=radius_km)
         if not candidate_locations:
-            st.error("No se encontró ninguna estación de monitoreo con sensores PM2.5 cerca.")
-            return None, None, "Sin estaciones cercanas"
+            st.warning("No se encontró ninguna estación de monitoreo con sensores PM2.5 cerca en OpenAQ.")
+            st.info("🔄 Intentando con WAQI como respaldo...")
+            return get_pm25_from_waqi(latitude, longitude)
 
         valid_measurements = []
 
@@ -165,23 +213,28 @@ def get_pm25(latitude: float, longitude: float, radius_km: int) -> Tuple[Optiona
             
             v, dt = get_latest_measurement_from_sensor(pm25_sensor_id)
             if v is not None and dt is not None:
-                st.write(f"✔️ Dato válido encontrado en '{loc_name}'.")
-                valid_measurements.append({
-                    "value": v,
-                    "dt_iso": dt,
-                    "source": f"OpenAQ • {loc_name}"
-                })
+                # Verificar si los datos son frescos (máximo 7 días)
+                if is_data_fresh(dt, max_age_days=7):
+                    st.write(f"✔️ Dato válido y fresco encontrado en '{loc_name}'.")
+                    valid_measurements.append({
+                        "value": v,
+                        "dt_iso": dt,
+                        "source": f"OpenAQ • {loc_name}"
+                    })
+                else:
+                    st.write(f"⚠️ Datos de '{loc_name}' son muy antiguos (más de 7 días).")
             else:
                 st.write(f"⚠️ El sensor de '{loc_name}' no reportó datos recientes.")
 
         if not valid_measurements:
-            st.error(f"Se revisaron {len(candidate_locations)} estaciones, pero ninguna tiene datos de PM2.5 válidos.")
-            return None, None, "Sin datos disponibles"
+            st.warning(f"Se revisaron {len(candidate_locations)} estaciones en OpenAQ, pero ninguna tiene datos de PM2.5 frescos.")
+            st.info("🔄 Intentando con WAQI como respaldo...")
+            return get_pm25_from_waqi(latitude, longitude)
 
         # Ordenar las mediciones por fecha para encontrar la más reciente
         most_recent_measurement = sorted(valid_measurements, key=lambda x: x['dt_iso'], reverse=True)[0]
         
-        st.success(f"✓ Seleccionada la medición más reciente de todas las estaciones, proveniente de: '{most_recent_measurement['source']}'")
+        st.success(f"✓ Seleccionada la medición más reciente de OpenAQ: '{most_recent_measurement['source']}'")
         
         return (
             most_recent_measurement['value'],
@@ -191,10 +244,12 @@ def get_pm25(latitude: float, longitude: float, radius_km: int) -> Tuple[Optiona
 
     except requests.exceptions.RequestException as e:
         st.error(f"Error al contactar la API de OpenAQ: {e}")
+        st.info("🔄 Intentando con WAQI como respaldo...")
+        return get_pm25_from_waqi(latitude, longitude)
     except Exception as e:
         st.error(f"Error inesperado: {e}")
-
-    return None, None, "Sin datos disponibles"
+        st.info("🔄 Intentando con WAQI como respaldo...")
+        return get_pm25_from_waqi(latitude, longitude)
 
 # -----------------------------
 # UI de la Barra Lateral
