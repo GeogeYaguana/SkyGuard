@@ -384,7 +384,7 @@ with st.sidebar:
             else:
                 st.error("No se pudo obtener tu ubicación. Asegúrate de dar permisos.")
         st.markdown("**Opción B: Buscar por Sector**")
-        city_input = st.text_input("Ingresa un sector,ciudad y el pais de la ciudad(ej: 'Tarqui,Guayaquil,Ecuador')")
+        city_input = st.text_input("Ingresa un ciudad y el pais de la ciudad(ej: 'Guayaquil,Ecuador')")
 
         if st.button("Buscar por Ciudad", use_container_width=True):
             if city_input:
@@ -465,7 +465,7 @@ if page == "Inicio":
 
             # Opción B
             st.markdown("##### B) Ingresar por Sector✍️")
-            st.markdown('Escriba en el siguiente formato "sector,ciudad,pais" y haga click en buscar por sector ')
+            st.markdown('Escriba en el siguiente formato "ciudad,pais" y haga click en buscar por sector ')
             
 
         with col2:
